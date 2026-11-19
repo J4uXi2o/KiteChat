@@ -1,0 +1,13 @@
+{
+  "appId": "com.kitechat.app",
+  "appName": "KiteChat",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "android": {
+    "allowMixedContent": true,
+    "backgroundColor": "#FFFFFF"
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

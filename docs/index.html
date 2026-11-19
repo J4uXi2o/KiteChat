@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>KiteChat — 完全本地化的多提供商 AI 聊天盒子</title>
+<meta name="description" content="KiteChat：Android 上完全本地化的多提供商 AI 聊天盒子。聊天、识图、生图、联网搜索、语音，密钥只存本机。AGPL-3.0 开源。" />
+<link rel="icon" href="assets/icon.png" />
+<style>
+  :root { color-scheme: light dark; --bg:#ffffff; --fg:#17181c; --muted:#6b7280; --card:#f6f7f9; --line:#e5e7eb; --brand:#4f6df5; --brand-fg:#fff; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#151517; --fg:#f2f3f5; --muted:#9aa0a6; --card:#1e1f24; --line:#2c2d33; --brand:#7c93ff; --brand-fg:#10122b; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.7 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--fg); }
+  .wrap { max-width:1040px; margin:0 auto; padding:0 24px; }
+  header { display:flex; align-items:center; gap:12px; padding:20px 0; }
+  header img { width:40px; height:40px; border-radius:10px; }
+  header .name { font-weight:700; font-size:20px; }
+  header nav { margin-left:auto; display:flex; gap:18px; }
+  a { color:var(--brand); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .hero { display:grid; grid-template-columns:1.2fr .8fr; gap:40px; align-items:center; padding:48px 0 32px; }
+  @media (max-width:800px){ .hero { grid-template-columns:1fr; } }
+  h1 { font-size:40px; line-height:1.25; margin:0 0 16px; }
+  .sub { color:var(--muted); font-size:17px; margin:0 0 28px; }
+  .cta { display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
+  .btn { display:inline-flex; align-items:center; gap:8px; padding:12px 22px; border-radius:14px; background:var(--brand); color:var(--brand-fg); font-weight:600; }
+  .btn:hover { text-decoration:none; filter:brightness(1.08); }
+  .btn.ghost { background:transparent; color:var(--fg); border:1px solid var(--line); }
+  .ver { color:var(--muted); font-size:14px; margin-top:14px; }
+  .hero img.banner { width:100%; border-radius:20px; border:1px solid var(--line); }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; padding:24px 0 8px; }
+  @media (max-width:800px){ .grid { grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:18px 20px; }
+  .card h3 { margin:0 0 8px; font-size:16px; }
+  .card p { margin:0; color:var(--muted); font-size:14px; }
+  section { padding:28px 0; }
+  h2 { font-size:24px; margin:0 0 16px; }
+  .shots { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+  @media (max-width:800px){ .shots { grid-template-columns:1fr; } }
+  .shots img { width:100%; border-radius:16px; border:1px solid var(--line); }
+  .shots figcaption { color:var(--muted); font-size:13px; text-align:center; margin-top:8px; }
+  .links { display:flex; gap:22px; flex-wrap:wrap; color:var(--muted); font-size:14px; }
+  footer { border-top:1px solid var(--line); margin-top:32px; padding:24px 0 40px; color:var(--muted); font-size:13px; }
+  code { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <img src="assets/icon.png" alt="KiteChat icon" />
+    <span class="name">KiteChat</span>
+    <nav>
+      <a href="https://github.com/J4uXi2o/KiteChat">GitHub</a>
+      <a href="https://github.com/J4uXi2o/KiteChat/releases">Releases</a>
+      <a href="https://github.com/J4uXi2o/KiteChat/issues">反馈</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <div>
+      <h1>把多家 AI 装进一个<br />完全本地的聊天盒子</h1>
+      <p class="sub">聊天 · 识图 · 生图 · 联网搜索 · 语音输入与朗读。对话、附件与 API Key 只保存在你的设备上，网络仅直连你配置的 API。无账号、无遥测、无云同步。</p>
+      <div class="cta">
+        <a class="btn" id="download" href="https://github.com/J4uXi2o/KiteChat/releases/latest">下载 Android APK</a>
+        <a class="btn ghost" href="https://github.com/J4uXi2o/KiteChat">查看源码</a>
+      </div>
+      <div class="ver" id="version">最新版本见 Releases · AGPL-3.0 开源</div>
+    </div>
+    <img class="banner" src="assets/banner.png" alt="KiteChat banner" />
+  </div>
+
+  <div class="grid">
+    <div class="card"><h3>多提供商，按功能绑定</h3><p>DeepSeek / OpenAI / 硅基流动 / 基元律动 / Ollama 等预设，聊天、识图、生图、搜索、语音各自绑定模型，也可自定义兼容端点。</p></div>
+    <div class="card"><h3>一键配置</h3><p>首次启动粘贴一个 DeepSeek Key，自动配齐聊天、识图、标题、联网搜索与语音服务。</p></div>
+    <div class="card"><h3>微信式语音</h3><p>按住说话、上滑取消、松手自动转写发送；音色按官方文档内置，支持自定义音色 ID。</p></div>
+    <div class="card"><h3>附件与链接</h3><p>图片 / PDF / Word 解析提问；粘贴网址自动读正文作上下文，仅用户链接、拒绝内网地址。</p></div>
+    <div class="card"><h3>生图与图生图</h3><p>尺寸张数由模型按你的话推断、不改原文；参考图二次创作跨厂商可用。</p></div>
+    <div class="card"><h3>隐私与安全</h3><p>密钥不进日志与导出包；跨主机重定向自动剥离鉴权头；渲染管线消毒；停止即真取消请求。</p></div>
+  </div>
+
+  <section>
+    <h2>界面预览</h2>
+    <div class="shots">
+      <figure style="margin:0"><img src="assets/shot-chat.png" alt="chat" /><figcaption>聊天与深度思考</figcaption></figure>
+      <figure style="margin:0"><img src="assets/shot-voice.png" alt="voice" /><figcaption>按住说话</figcaption></figure>
+      <figure style="margin:0"><img src="assets/shot-about.png" alt="about" /><figcaption>关于与检查更新</figcaption></figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>安装与构建</h2>
+    <p style="color:var(--muted)">下载 APK 覆盖安装即可保留数据（同一签名证书）。自行构建：<code>npm install</code> → <code>npm run build</code> → <code>npx cap sync android</code> → <code>./gradlew assembleRelease</code>。签名材料不入库，CI 从 Secrets 还原；打 tag <code>v*</code> 自动发布 Release，应用内「关于 → 检查更新」同步提示。</p>
+    <div class="links">
+      <span>问题反馈邮箱：58468680@qq.com</span>
+      <span>反馈 QQ 群：195425971</span>
+      <a href="https://github.com/J4uXi2o/KiteChat/blob/main/LICENSE">AGPL-3.0</a>
+    </div>
+  </section>
+
+  <footer>
+    KiteChat · 基于 deepseek-ai/chat-demo（MIT）重构 · 本页与源码托管于 GitHub
+  </footer>
+</div>
+<script>
+  fetch('https://api.github.com/repos/J4uXi2o/KiteChat/releases/latest')
+    .then(r => r.ok ? r.json() : Promise.reject())
+    .then(d => {
+      const apk = (d.assets || []).find(a => (a.name || '').endsWith('.apk'));
+      if (apk) document.getElementById('download').href = apk.browser_download_url;
+      document.getElementById('version').textContent = '最新版本 ' + (d.tag_name || '') + ' · AGPL-3.0 开源';
+    })
+    .catch(() => {});
+</script>
+</body>
+</html>
