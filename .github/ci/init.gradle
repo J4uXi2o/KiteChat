@@ -1,0 +1,24 @@
+// CI 环境使用官方 Maven 仓库（本地构建仍走项目内镜像配置）
+settingsEvaluated { settings ->
+    settings.pluginManagement.repositories {
+        clear()
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+allprojects {
+    buildscript {
+        repositories {
+            clear()
+            google()
+            mavenCentral()
+            gradlePluginPortal()
+        }
+    }
+    repositories {
+        clear()
+        google()
+        mavenCentral()
+    }
+}
