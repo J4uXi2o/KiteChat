@@ -30,6 +30,8 @@ type Settings = {
   readLinks: boolean
   /** 联网搜索开关（需配置搜索服务） */
   search: boolean
+  /** 每次搜索返回条数上限 */
+  searchMaxResults: number
   /** 用户自定义系统提示词 */
   systemPrompt: string
   siderCollapsed: boolean
@@ -49,6 +51,7 @@ const KEYS = {
   imageCount: 'kitechat:image-count',
   readLinks: 'kitechat:read-links',
   search: 'kitechat:search',
+  searchMaxResults: 'kitechat:search-max-results',
   systemPrompt: 'kitechat:system-prompt',
   siderCollapsed: 'kitechat:sider-collapsed',
 } as const
@@ -125,6 +128,7 @@ export const useSettings = create<Settings>(() => ({
   imageCount: Math.min(4, Math.max(1, Number(read(KEYS.imageCount)) || 1)),
   readLinks: read(KEYS.readLinks) !== 'false',
   search: read(KEYS.search) === 'true',
+  searchMaxResults: Math.min(50, Math.max(1, Number(read(KEYS.searchMaxResults)) || 20)),
   systemPrompt: read(KEYS.systemPrompt) ?? '',
   siderCollapsed: read(KEYS.siderCollapsed) === 'true',
 }))
@@ -177,6 +181,12 @@ export const setImageMode = (imageMode: boolean) => {
 export const setSearch = (search: boolean) => {
   write(KEYS.search, String(search))
   useSettings.setState({ search })
+}
+
+export const setSearchMaxResults = (searchMaxResults: number) => {
+  const value = Math.min(50, Math.max(1, Math.round(searchMaxResults) || 20))
+  write(KEYS.searchMaxResults, String(value))
+  useSettings.setState({ searchMaxResults: value })
 }
 
 export const setImageSize = (imageSize: string) => {

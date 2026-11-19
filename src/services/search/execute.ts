@@ -23,8 +23,10 @@ const hostOf = (url: string) => {
 export const executeSearch = async (
   provider: SearchProvider,
   query: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  maxResults = 20
 ): Promise<SearchHit[]> => {
+  const count = Math.min(50, Math.max(1, Math.round(maxResults) || 20))
   if (provider.kind === 'tavily') {
     const init: RequestInit = {
       method: 'POST',
@@ -32,7 +34,7 @@ export const executeSearch = async (
         'Content-Type': 'application/json',
         Authorization: `Bearer ${provider.apiKey}`,
       },
-      body: JSON.stringify({ query, max_results: 6, search_depth: 'basic' }),
+      body: JSON.stringify({ query, max_results: count, search_depth: 'basic' }),
       signal,
     }
     let response: Response
@@ -75,7 +77,7 @@ export const executeSearch = async (
     const response = await fetch('https://api.deepseek.com/v1/tools/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
-      body: JSON.stringify({ query: query.slice(0, 128), count: 6, need_content: true }),
+      body: JSON.stringify({ query: query.slice(0, 128), count, need_content: true }),
       signal,
     })
     if (!response.ok) {
@@ -94,7 +96,7 @@ export const executeSearch = async (
     const response = await fetch('https://google.serper.dev/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-KEY': provider.apiKey },
-      body: JSON.stringify({ q: query, num: 6 }),
+      body: JSON.stringify({ q: query, num: count }),
       signal,
     })
     if (!response.ok) {
@@ -111,7 +113,7 @@ export const executeSearch = async (
   }
   if (provider.kind === 'brave') {
     const response = await fetch(
-      `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=6`,
+      `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`,
       { headers: { Accept: 'application/json', 'X-Subscription-Token': provider.apiKey }, signal }
     )
     if (!response.ok) {
@@ -130,7 +132,7 @@ export const executeSearch = async (
     const response = await fetch('https://api.exa.ai/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': provider.apiKey },
-      body: JSON.stringify({ query, numResults: 6, contents: { text: { maxCharacters: 600 } } }),
+      body: JSON.stringify({ query, numResults: count, contents: { text: { maxCharacters: 600 } } }),
       signal,
     })
     if (!response.ok) {
@@ -152,7 +154,7 @@ export const executeSearch = async (
       'Content-Type': 'application/json',
       Authorization: `Bearer ${provider.apiKey}`,
     },
-    body: JSON.stringify({ query, summary: true, count: 6 }),
+    body: JSON.stringify({ query, summary: true, count }),
     signal,
   })
   if (!response.ok) {

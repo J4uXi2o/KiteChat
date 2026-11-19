@@ -108,7 +108,7 @@ export type GatewayRequest = {
   /** 模型级能力配置 */
   settings?: ModelSettings
   /** 启用客户端联网搜索 */
-  search?: { provider: SearchProvider }
+  search?: { provider: SearchProvider; maxResults?: number }
 }
 
 const usage = (input: number, output: number): MessageUsage => ({
@@ -237,6 +237,29 @@ const WEB_SEARCH_TOOL_OPENAI = {
   },
 }
 
+/** DeepSeek 原生文本工具调用标记（撤掉工具后模型可能以文本形式输出调用） */
+const DSML_MARKER = '<｜DSML｜'
+const DSML_INVOKE_RE = /<｜DSML｜invoke name="([^"]+)">([\s\S]*?)<\/｜DSML｜invoke>/g
+const DSML_PARAM_RE = /<｜DSML｜parameter name="([^"]+)"[^>]*>([\s\S]*?)<\/｜DSML｜parameter>/g
+
+/** 从文本中提取 DSML 工具调用；返回清理后的文本与调用列表 */
+const extractDsmlCalls = (text: string): { clean: string; calls: { name: string; query: string }[] } => {
+  const calls: { name: string; query: string }[] = []
+  let clean = text.replace(DSML_INVOKE_RE, (_m, name: string, body: string) => {
+    let query = ''
+    for (const p of body.matchAll(DSML_PARAM_RE)) {
+      if (p[1] === 'query') {
+        query = p[2].trim()
+      }
+    }
+    calls.push({ name, query })
+    return ''
+  })
+  // 清理残留标记（未闭合的 calls 包裹、流式截断的半个标记等）
+  clean = clean.replace(/<\/?｜DSML｜[^>]*>?/g, '').replace(/<｜DSML｜[\s\S]*$/, '')
+  return { clean: clean.trim(), calls }
+}
+
 type OpenAiRound = {
   events: MessageStreamEvent[]
   toolCalls: OpenAiToolCall[]
@@ -285,7 +308,62 @@ async function openAiRound(
   let stopReason: StopReason = 'end_turn'
   let finalUsage: MessageUsage | undefined
   let assistantText = ''
+  let dsmlBuffer = ''
+  let inDsml = false
+  const dsmlCalls: { name: string; query: string }[] = []
   const toolAcc = new Map<number, { id: string; name: string; args: string }>()
+
+  /** 过滤正文中的 DSML 工具调用标记，完整调用收集为工具请求 */
+  const pushVisibleText = (chunk: string) => {
+    if (!chunk) {
+      return
+    }
+    if (!textOpen) {
+      closeBlock()
+      textOpen = true
+      events.push({ type: 'content_block_start', index, content_block: { type: 'text', text: '' } })
+    }
+    assistantText += chunk
+    events.push({ type: 'content_block_delta', index, delta: { type: 'text_delta', text: chunk } })
+  }
+  const feedText = (chunk: string) => {
+    dsmlBuffer += chunk
+    for (;;) {
+      if (!inDsml) {
+        const marker = dsmlBuffer.indexOf(DSML_MARKER)
+        if (marker < 0) {
+          // 保留可能是标记开头的尾部，其余输出
+          let keep = 0
+          const maxPrefix = Math.min(dsmlBuffer.length, DSML_MARKER.length - 1)
+          for (let k = maxPrefix; k > 0; k--) {
+            if (DSML_MARKER.startsWith(dsmlBuffer.slice(-k))) {
+              keep = k
+              break
+            }
+          }
+          const emit = dsmlBuffer.slice(0, dsmlBuffer.length - keep)
+          dsmlBuffer = dsmlBuffer.slice(dsmlBuffer.length - keep)
+          pushVisibleText(emit)
+          return
+        }
+        pushVisibleText(dsmlBuffer.slice(0, marker))
+        dsmlBuffer = dsmlBuffer.slice(marker)
+        inDsml = true
+      }
+      const end = dsmlBuffer.indexOf('</｜DSML｜calls>')
+      if (end < 0) {
+        return
+      }
+      const blockText = dsmlBuffer.slice(0, end + '</｜DSML｜calls>'.length)
+      dsmlBuffer = dsmlBuffer.slice(end + '</｜DSML｜calls>'.length)
+      inDsml = false
+      const extracted = extractDsmlCalls(blockText)
+      dsmlCalls.push(...extracted.calls)
+      if (extracted.clean) {
+        pushVisibleText(extracted.clean)
+      }
+    }
+  }
 
   const closeBlock = () => {
     if (textOpen || thinkOpen) {
@@ -324,9 +402,10 @@ async function openAiRound(
       events.push({ type: 'content_block_stop', index })
       index += 1
     }
-    if (content) {
-      assistantText = content
-      events.push({ type: 'content_block_start', index, content_block: { type: 'text', text: content } })
+    const dsml = content ? extractDsmlCalls(content) : { clean: '', calls: [] }
+    if (dsml.clean) {
+      assistantText = dsml.clean
+      events.push({ type: 'content_block_start', index, content_block: { type: 'text', text: dsml.clean } })
       events.push({ type: 'content_block_stop', index })
       index += 1
     }
@@ -334,6 +413,15 @@ async function openAiRound(
     const toolCalls = (Array.isArray(rawCalls) ? (rawCalls as OpenAiToolCall[]) : []).filter(
       (call) => typeof call?.id === 'string' && typeof call?.function?.name === 'string'
     )
+    for (const call of dsml.calls) {
+      if (call.name === 'web_search' && call.query) {
+        toolCalls.push({
+          id: `dsml_${toolCalls.length + 1}`,
+          type: 'function',
+          function: { name: 'web_search', arguments: JSON.stringify({ query: call.query }) },
+        })
+      }
+    }
     const usageRecord = payload.usage as Record<string, unknown> | undefined
     return {
       events,
@@ -394,13 +482,7 @@ async function openAiRound(
     }
     const content = delta?.content
     if (typeof content === 'string' && content) {
-      if (!textOpen) {
-        closeBlock()
-        textOpen = true
-        events.push({ type: 'content_block_start', index, content_block: { type: 'text', text: '' } })
-      }
-      assistantText += content
-      events.push({ type: 'content_block_delta', index, delta: { type: 'text_delta', text: content } })
+      feedText(content)
     }
     const rawToolDeltas = delta?.tool_calls
     if (Array.isArray(rawToolDeltas)) {
@@ -433,7 +515,26 @@ async function openAiRound(
       )
     }
   }
+  // 流结束：处理残留缓冲（完整调用提取，截断标记丢弃）
+  if (dsmlBuffer) {
+    const extracted = extractDsmlCalls(dsmlBuffer)
+    dsmlCalls.push(...extracted.calls)
+    if (extracted.clean) {
+      pushVisibleText(extracted.clean)
+    }
+    dsmlBuffer = ''
+  }
   closeBlock()
+  // DSML 文本调用转成标准工具调用
+  for (const call of dsmlCalls) {
+    if (call.name === 'web_search' && call.query) {
+      toolAcc.set(toolAcc.size + 1000, {
+        id: `dsml_${toolAcc.size + 1}`,
+        name: 'web_search',
+        args: JSON.stringify({ query: call.query }),
+      })
+    }
+  }
   const toolCalls = [...toolAcc.values()]
     .filter((acc) => acc.id && acc.name)
     .map((acc) => ({
@@ -467,17 +568,24 @@ async function* streamOpenAi(
   let toolUseCount = 0
   let lastUsage: MessageUsage | undefined
   let stopReason: StopReason = 'end_turn'
-  const maxRounds = body.search ? 6 : 1
+  const maxRounds = body.search ? 8 : 1
+  const searchBudget = body.search?.maxResults ?? 20
+  let searchesUsed = 0
+  let emptyStreak = 0
+  let forceFinal = false
   for (let round = 0; round < maxRounds; round++) {
-    // 最后一轮撤掉工具，强制模型基于已有搜索结果输出最终回答，避免只思考不正文
-    const withTools = Boolean(body.search) && round < maxRounds - 1
+    // 预算耗尽 / 连续无结果 / 最后一轮：撤掉工具强制收尾
+    const withTools = Boolean(body.search) && !forceFinal && round < maxRounds - 1 && searchesUsed < searchBudget
+    const finalNote = emptyStreak > 0
+      ? '搜索未能找到更多相关结果。请基于已有信息直接回答；确实查不到就如实说明查不到，不要编造。'
+      : '你已经完成资料检索。现在必须直接输出给用户的最终回答正文，用中文、条理清晰并引用来源。'
     const roundBody = withTools
       ? body
       : {
           ...body,
           system: [
             body.system,
-            '你已经完成资料检索。现在必须直接输出给用户的最终回答正文，用中文、条理清晰并引用来源；不要再调用任何工具，也不要只输出思考过程。',
+            finalNote + '禁止再调用任何工具，禁止输出任何工具调用标记或代码，也不要只输出思考过程。',
           ]
             .filter(Boolean)
             .join('\n\n'),
@@ -501,6 +609,7 @@ async function* streamOpenAi(
     })
     for (const call of result.toolCalls) {
       toolUseCount += 1
+      searchesUsed += 1
       const toolId = `srvtoolu_search_${toolUseCount}`
       let query = ''
       try {
@@ -526,9 +635,17 @@ async function* streamOpenAi(
       let hits: SearchHit[] = []
       let failed = false
       try {
-        hits = await executeSearch(body.search.provider, query, signal)
+        hits = await executeSearch(body.search.provider, query, signal, body.search.maxResults)
       } catch {
         failed = true
+      }
+      if (hits.length === 0) {
+        emptyStreak += 1
+        if (emptyStreak >= 2) {
+          forceFinal = true
+        }
+      } else {
+        emptyStreak = 0
       }
       yield {
         type: 'content_block_start',
@@ -623,6 +740,9 @@ async function anthropicRound(
   let stopReason: StopReason = 'end_turn'
   let lastUsage: MessageUsage | undefined
   let inputTokens = 0
+  let dsmlBuffer = ''
+  let inDsml = false
+  const dsmlTextCalls: { name: string; query: string }[] = []
 
   for await (const { event: eventName, data } of readServerSentEvents(response.body, signal)) {
     let payload: unknown
@@ -667,6 +787,44 @@ async function anthropicRound(
       }
       if (block && delta.type === 'text_delta' && typeof delta.text === 'string') {
         block.text = ((block.text as string) ?? '') + delta.text
+        // DSML 文本工具调用：缓冲过滤，完整调用提取
+        dsmlBuffer += delta.text
+        let visible = ''
+        for (;;) {
+          if (!inDsml) {
+            const marker = dsmlBuffer.indexOf(DSML_MARKER)
+            if (marker < 0) {
+              let keep = 0
+              const maxPrefix = Math.min(dsmlBuffer.length, DSML_MARKER.length - 1)
+              for (let k = maxPrefix; k > 0; k--) {
+                if (DSML_MARKER.startsWith(dsmlBuffer.slice(-k))) {
+                  keep = k
+                  break
+                }
+              }
+              visible += dsmlBuffer.slice(0, dsmlBuffer.length - keep)
+              dsmlBuffer = dsmlBuffer.slice(dsmlBuffer.length - keep)
+              break
+            }
+            visible += dsmlBuffer.slice(0, marker)
+            dsmlBuffer = dsmlBuffer.slice(marker)
+            inDsml = true
+          }
+          const end = dsmlBuffer.indexOf('</｜DSML｜calls>')
+          if (end < 0) {
+            break
+          }
+          const blockText = dsmlBuffer.slice(0, end + '</｜DSML｜calls>'.length)
+          dsmlBuffer = dsmlBuffer.slice(end + '</｜DSML｜calls>'.length)
+          inDsml = false
+          const extracted = extractDsmlCalls(blockText)
+          dsmlTextCalls.push(...extracted.calls)
+          visible += extracted.clean
+        }
+        delta.text = visible
+        if (!visible) {
+          continue
+        }
       }
       if (block && delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
         block.thinking = ((block.thinking as string) ?? '') + delta.thinking
@@ -707,6 +865,12 @@ async function anthropicRound(
       break
     }
   }
+  // DSML 文本调用转成标准 tool_use
+  for (const call of dsmlTextCalls) {
+    if (call.name === 'web_search' && call.query) {
+      toolUses.push({ id: `dsml_${toolUses.length + 1}`, name: 'web_search', input: { query: call.query } })
+    }
+  }
   return { events, toolUses, assistantContent, stopReason, usage: lastUsage }
 }
 
@@ -720,17 +884,23 @@ async function* streamAnthropic(
   let toolUseCount = 0
   let lastUsage: MessageUsage | undefined
   let stopReason: StopReason = 'end_turn'
-  const maxRounds = body.search ? 6 : 1
+  const maxRounds = body.search ? 8 : 1
+  const searchBudget = body.search?.maxResults ?? 20
+  let searchesUsed = 0
+  let emptyStreak = 0
+  let forceFinal = false
   for (let round = 0; round < maxRounds; round++) {
-    // 最后一轮撤掉工具，强制模型基于已有搜索结果输出最终回答
-    const withTools = Boolean(body.search) && round < maxRounds - 1
+    const withTools = Boolean(body.search) && !forceFinal && round < maxRounds - 1 && searchesUsed < searchBudget
+    const finalNote = emptyStreak > 0
+      ? '搜索未能找到更多相关结果。请基于已有信息直接回答；确实查不到就如实说明查不到，不要编造。'
+      : '你已经完成资料检索。现在必须直接输出给用户的最终回答正文，用中文、条理清晰并引用来源。'
     const roundBody = withTools
       ? body
       : {
           ...body,
           system: [
             body.system,
-            '你已经完成资料检索。现在必须直接输出给用户的最终回答正文，用中文、条理清晰并引用来源；不要再调用任何工具，也不要只输出思考过程。',
+            finalNote + '禁止再调用任何工具，禁止输出任何工具调用标记或代码，也不要只输出思考过程。',
           ]
             .filter(Boolean)
             .join('\n\n'),
@@ -748,6 +918,7 @@ async function* streamAnthropic(
     const toolResults: unknown[] = []
     for (const tool of result.toolUses) {
       toolUseCount += 1
+      searchesUsed += 1
       const query =
         typeof (tool.input as { query?: unknown })?.query === 'string'
           ? ((tool.input as { query: string }).query)
@@ -755,9 +926,17 @@ async function* streamAnthropic(
       let hits: SearchHit[] = []
       let failed = false
       try {
-        hits = await executeSearch(body.search.provider, query, signal)
+        hits = await executeSearch(body.search.provider, query, signal, body.search.maxResults)
       } catch {
         failed = true
+      }
+      if (hits.length === 0) {
+        emptyStreak += 1
+        if (emptyStreak >= 2) {
+          forceFinal = true
+        }
+      } else {
+        emptyStreak = 0
       }
       const resultBlock = {
         type: 'web_search_tool_result',

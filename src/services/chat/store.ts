@@ -1092,7 +1092,9 @@ const streamReply = async (
           messages,
           thinking: initial.thinking ?? false,
           settings: getModelSettings(binding.provider, modelName),
-          ...(searchProvider ? { search: { provider: searchProvider } } : {}),
+          ...(searchProvider
+            ? { search: { provider: searchProvider, maxResults: useSettings.getState().searchMaxResults } }
+            : {}),
         },
         controller.signal
       )

@@ -11,7 +11,7 @@ import {
   type FeatureSlot,
 } from '../../services/providers/store.js'
 import { SEARCH_PRESETS } from '../../services/providers/store.js'
-import { setReadLinks, useSettings } from '../../services/settings.js'
+import { setReadLinks, setSearchMaxResults, useSettings } from '../../services/settings.js'
 import { SpeechSection } from './SpeechSection.js'
 import { Button } from '../base/Button.js'
 import { Select } from '../base/Select.js'
@@ -24,6 +24,7 @@ export const ModelsSection = () => {
   const bindings = useProviders((state) => state.bindings)
   const searchProviders = useProviders((state) => state.searchProviders)
   const activeSearchId = useProviders((state) => state.activeSearchId)
+  const searchMaxResults = useSettings((state) => state.searchMaxResults)
   const [showKey, setShowKey] = useState<Record<string, boolean>>({})
 
   const chatProviders = providers.filter((provider) => provider.kind !== 'image')
@@ -94,6 +95,18 @@ export const ModelsSection = () => {
 
       <div className={styles.presetGroupTitle}>{t('searchSectionTitle')}</div>
       <div className={styles.sectionHint}>{t('searchHint')}</div>
+      <div className={styles.slotCard}>
+        <div className={styles.providerHead}>
+          <span className={styles.providerName}>{t('searchMaxResultsLabel')}</span>
+          <Select
+            ariaLabel={t('searchMaxResultsLabel')}
+            value={String(searchMaxResults)}
+            options={[5, 10, 15, 20, 30, 50].map((n) => ({ value: String(n), label: t('searchMaxResultsOption', { count: n }) }))}
+            onChange={(value) => setSearchMaxResults(Number(value))}
+          />
+        </div>
+        <div className={styles.sectionHint}>{t('searchMaxResultsHint')}</div>
+      </div>
       {searchProviders.map((provider) => (
         <div key={provider.id} className={styles.slotCard}>
           <div className={styles.providerHead}>
