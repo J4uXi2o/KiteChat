@@ -227,36 +227,44 @@ const toOpenAiMessages = (system: string, messages: MessageParam[]): OpenAiMessa
   return result
 }
 
-const WEB_SEARCH_TOOL_OPENAI = {
-  type: 'function',
-  function: {
-    name: 'web_search',
-    description: '搜索互联网获取实时信息。当问题涉及最新事件、实时数据或需要外部知识时调用。',
-    parameters: {
-      type: 'object',
-      properties: { query: { type: 'string', description: '搜索关键词' } },
-      required: ['query'],
+/** 工具语义按界面语言注入，与收尾提示共用同一语言判断 */
+const webSearchToolOpenAi = () => {
+  const zh = useSettings.getState().locale === 'zh-CN'
+  return {
+    type: 'function',
+    function: {
+      name: 'web_search',
+      description: zh
+        ? '搜索互联网获取实时信息。当问题涉及最新事件、实时数据或需要外部知识时调用。'
+        : 'Search the internet for real-time information. Call when the question involves recent events, live data, or external knowledge.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: zh ? '搜索关键词' : 'Search keywords' },
+        },
+        required: ['query'],
+      },
     },
-  },
+  }
 }
 
 type OpenAiRound = {
-  events: MessageStreamEvent[]
   toolCalls: OpenAiToolCall[]
   assistantText: string
   stopReason: StopReason
   usage?: MessageUsage
 }
 
-/** 单轮 OpenAI 请求：收集事件与工具调用，不产出 message_delta/message_stop */
-async function openAiRound(
+/** 单轮 OpenAI 请求：事件边收边发，轮末返回工具调用等汇总，不产出 message_delta/message_stop */
+async function* openAiRound(
   provider: Provider,
   body: GatewayRequest,
   messages: OpenAiMessage[],
   withTools: boolean,
   indexOffset: number,
   signal: AbortSignal
-): Promise<OpenAiRound> {
+): AsyncGenerator<MessageStreamEvent, OpenAiRound> {
+  const pending: MessageStreamEvent[] = []
   const response = await request(joinUrl(provider.baseUrl, '/chat/completions'), {
     method: 'POST',
     headers: {
@@ -272,7 +280,7 @@ async function openAiRound(
       ...(body.maxTokens !== undefined ? { max_tokens: body.maxTokens } : {}),
       ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
       ...thinkingFields(provider, body.thinking ?? false, body.settings),
-      ...(withTools ? { tools: [WEB_SEARCH_TOOL_OPENAI], tool_choice: 'auto' } : {}),
+      ...(withTools ? { tools: [webSearchToolOpenAi()], tool_choice: 'auto' } : {}),
     }),
     signal,
   })
@@ -281,7 +289,6 @@ async function openAiRound(
     throw await readErrorBody(response)
   }
 
-  const events: MessageStreamEvent[] = []
   let textOpen = false
   let thinkOpen = false
   let index = indexOffset
@@ -299,10 +306,10 @@ async function openAiRound(
     if (!textOpen) {
       closeBlock()
       textOpen = true
-      events.push({ type: 'content_block_start', index, content_block: { type: 'text', text: '' } })
+      pending.push({ type: 'content_block_start', index, content_block: { type: 'text', text: '' } })
     }
     assistantText += chunk
-    events.push({ type: 'content_block_delta', index, delta: { type: 'text_delta', text: chunk } })
+    pending.push({ type: 'content_block_delta', index, delta: { type: 'text_delta', text: chunk } })
   }
   const feedText = (chunk: string) => {
     pushVisibleText(dsmlFilter.feed(chunk))
@@ -310,10 +317,19 @@ async function openAiRound(
 
   const closeBlock = () => {
     if (textOpen || thinkOpen) {
-      events.push({ type: 'content_block_stop', index })
+      pending.push({ type: 'content_block_stop', index })
       textOpen = false
       thinkOpen = false
       index += 1
+    }
+  }
+  const drain = function* () {
+    for (;;) {
+      const event = pending.shift()
+      if (!event) {
+        return
+      }
+      yield event
     }
   }
 
@@ -337,19 +353,19 @@ async function openAiRound(
           ? message.reasoning
           : ''
     if (reasoning) {
-      events.push({
+      yield {
         type: 'content_block_start',
         index,
         content_block: { type: 'thinking', thinking: reasoning, signature: '' },
-      })
-      events.push({ type: 'content_block_stop', index })
+      }
+      yield { type: 'content_block_stop', index }
       index += 1
     }
     const dsml = content ? extractDsmlCalls(content) : { clean: '', calls: [] }
     if (dsml.clean) {
       assistantText = dsml.clean
-      events.push({ type: 'content_block_start', index, content_block: { type: 'text', text: dsml.clean } })
-      events.push({ type: 'content_block_stop', index })
+      yield { type: 'content_block_start', index, content_block: { type: 'text', text: dsml.clean } }
+      yield { type: 'content_block_stop', index }
       index += 1
     }
     const rawCalls = message?.tool_calls
@@ -367,7 +383,6 @@ async function openAiRound(
     }
     const usageRecord = payload.usage as Record<string, unknown> | undefined
     return {
-      events,
       toolCalls,
       assistantText,
       stopReason: openAiStopReason(choice?.finish_reason),
@@ -411,22 +426,23 @@ async function openAiRound(
       if (!thinkOpen) {
         closeBlock()
         thinkOpen = true
-        events.push({
+        yield {
           type: 'content_block_start',
           index,
           content_block: { type: 'thinking', thinking: '', signature: '' },
-        })
+        }
       }
-      events.push({
+      yield {
         type: 'content_block_delta',
         index,
         delta: { type: 'thinking_delta', thinking: reasoning },
-      })
+      }
     }
     const content = delta?.content
     if (typeof content === 'string' && content) {
       feedText(content)
     }
+    yield* drain()
     const rawToolDeltas = delta?.tool_calls
     if (Array.isArray(rawToolDeltas)) {
       for (const item of rawToolDeltas as Record<string, unknown>[]) {
@@ -461,6 +477,7 @@ async function openAiRound(
   // 流结束：处理残留缓冲（完整调用提取，截断标记丢弃）
   pushVisibleText(dsmlFilter.flush())
   closeBlock()
+  yield* drain()
   // DSML 文本调用转成标准工具调用
   for (const call of dsmlFilter.calls) {
     if (call.name === 'web_search' && call.query) {
@@ -478,7 +495,7 @@ async function openAiRound(
       type: 'function' as const,
       function: { name: acc.name, arguments: acc.args },
     }))
-  return { events, toolCalls, assistantText, stopReason, usage: finalUsage }
+  return { toolCalls, assistantText, stopReason, usage: finalUsage }
 }
 
 const hitsToResults = (hits: SearchHit[]): WebSearchResult[] =>
@@ -620,13 +637,17 @@ async function* streamOpenAi(
         messages.unshift({ role: 'system', content: roundBody.system })
       }
     }
-    const result = await openAiRound(provider, roundBody, messages, withTools, index, signal)
-    for (const event of result.events) {
+    const round = openAiRound(provider, roundBody, messages, withTools, index, signal)
+    let step = await round.next()
+    while (!step.done) {
+      const event = step.value
       yield event
       if (event.type === 'content_block_stop') {
         index = event.index + 1
       }
+      step = await round.next()
     }
+    const result = step.value
     lastUsage = result.usage ?? lastUsage
     stopReason = result.stopReason
     if (!withTools || result.toolCalls.length === 0 || !body.search) {
@@ -683,27 +704,37 @@ const toAnthropicBody = (
     ...(thinking ? { thinking } : {}),
     ...(body.temperature !== undefined && !thinking ? { temperature: body.temperature } : {}),
     ...(withTools
-      ? { tools: [{ name: 'web_search', description: '搜索互联网获取实时信息', input_schema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } }] }
+      ? {
+          tools: [
+            {
+              name: 'web_search',
+              description:
+                useSettings.getState().locale === 'zh-CN'
+                  ? '搜索互联网获取实时信息'
+                  : 'Search the internet for real-time information',
+              input_schema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+            },
+          ],
+        }
       : {}),
     stream: true,
   }
 }
 
 type AnthropicRound = {
-  events: MessageStreamEvent[]
   toolUses: { id: string; name: string; input: unknown }[]
   assistantContent: unknown[]
   stopReason: StopReason
   usage?: MessageUsage
 }
 
-async function anthropicRound(
+async function* anthropicRound(
   provider: Provider,
   body: GatewayRequest,
   messages: unknown[],
   withTools: boolean,
   signal: AbortSignal
-): Promise<AnthropicRound> {
+): AsyncGenerator<MessageStreamEvent, AnthropicRound> {
   const response = await request(joinUrl(provider.baseUrl, '/messages'), {
     method: 'POST',
     headers: {
@@ -718,7 +749,6 @@ async function anthropicRound(
   if (!response.body || !contentType.includes('text/event-stream')) {
     throw await readErrorBody(response)
   }
-  const events: MessageStreamEvent[] = []
   const toolUses: { id: string; name: string; input: unknown }[] = []
   const assistantContent: unknown[] = []
   const openBlocks = new Map<number, Record<string, unknown>>()
@@ -811,7 +841,7 @@ async function anthropicRound(
     }
     const event = readMessageEvent(payload)
     if (event && event.type !== 'message_stop' && event.type !== 'message_start') {
-      events.push(event)
+      yield event
     }
     if (record.type === 'message_stop') {
       break
@@ -824,7 +854,7 @@ async function anthropicRound(
       toolUses.push({ id: `dsml_${toolUses.length + 1}`, name: 'web_search', input: { query: call.query } })
     }
   }
-  return { events, toolUses, assistantContent, stopReason, usage: lastUsage }
+  return { toolUses, assistantContent, stopReason, usage: lastUsage }
 }
 
 async function* streamAnthropic(
@@ -841,13 +871,17 @@ async function* streamAnthropic(
   for (; loop.round < MAX_SEARCH_ROUNDS; loop.round++) {
     const withTools = searchLoopWithTools(loop, body)
     const roundBody = withTools ? body : searchFinalBody(loop, body)
-    const result = await anthropicRound(provider, roundBody, messages, withTools, signal)
-    for (const event of result.events) {
+    const round = anthropicRound(provider, roundBody, messages, withTools, signal)
+    let step = await round.next()
+    while (!step.done) {
+      const event = step.value
       yield event
       if (event.type === 'content_block_stop') {
         index = Math.max(index, event.index + 1)
       }
+      step = await round.next()
     }
+    const result = step.value
     lastUsage = result.usage ?? lastUsage
     stopReason = result.stopReason
     if (!withTools || result.toolUses.length === 0 || !body.search) {

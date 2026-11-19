@@ -135,7 +135,7 @@ export const SpeechSection = () => {
                 } else {
                   setCustomVoice((state) => {
                     const next = { ...state }
-                    delete next[provider.id]
+                    Reflect.deleteProperty(next, provider.id)
                     return next
                   })
                   updateSpeechProvider(provider.id, { ttsVoice: value })
@@ -160,7 +160,7 @@ export const SpeechSection = () => {
                     updateSpeechProvider(provider.id, { ttsVoice: customVoice[provider.id].trim() })
                     setCustomVoice((state) => {
                       const next = { ...state }
-                      delete next[provider.id]
+                      Reflect.deleteProperty(next, provider.id)
                       return next
                     })
                   }}

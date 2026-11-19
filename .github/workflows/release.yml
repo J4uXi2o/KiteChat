@@ -29,6 +29,12 @@ jobs:
       - name: Install web dependencies
         run: npm ci --no-audit --no-fund
 
+      - name: Quality gates (type / lint / unit tests)
+        run: |
+          npm run type
+          npm run lint
+          npm test
+
       - name: Build web assets
         run: npm run build
 

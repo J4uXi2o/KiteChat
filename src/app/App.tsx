@@ -19,6 +19,7 @@ import { closeSettings, useSettingsDialog } from '../components/settings/setting
 import { newChat } from '../services/chat/store.js'
 import { restoreDrafts, setDraftText } from '../services/chat/drafts.js'
 import { maybeShowOnboarding, Onboarding } from '../components/onboarding/Onboarding.js'
+import { maybeCheckUpdate, UpdateDialog } from '../components/update/UpdateDialog.js'
 import { ImageViewer, useImageViewer } from '../components/base/ImageViewer.js'
 import { useMessageMenu } from '../components/messages/MessageContextMenu.js'
 import { useModelMenu } from '../components/chatInput/ChatInput.js'
@@ -89,6 +90,7 @@ export const App = () => {
     restoreDrafts()
     void initChat()
     maybeShowOnboarding()
+    maybeCheckUpdate()
     window.KiteNative?.webReady?.()
     const takeShare = () => {
       const text = window.KiteNative?.takeShare?.()
@@ -170,6 +172,7 @@ export const App = () => {
       </div>
       <SettingsDialog />
       <Onboarding />
+      <UpdateDialog />
       <ImageViewer />
       <Toast />
     </>

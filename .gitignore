@@ -3,6 +3,7 @@ node_modules/
 dist/
 toolchain/
 .staging/
+.test-build/
 *.log
 
 # Android build outputs

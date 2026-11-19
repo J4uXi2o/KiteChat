@@ -35,20 +35,27 @@ const encodeWav = (buffer: AudioBuffer): Blob => {
   return new Blob([view.buffer], { type: 'audio/wav' })
 }
 
-/** 重采样到 16kHz（DeepSeek ASR 推荐采样率，各家通用） */
+/** 重采样到 16kHz 兜底：优先由 AudioContext 内核完成高质量重采样，走到这里说明内核不支持指定采样率 */
 const resampleTo16k = (input: Float32Array<ArrayBuffer>, fromRate: number): Float32Array<ArrayBuffer> => {
   if (fromRate === 16000) {
     return input
   }
   const ratio = fromRate / 16000
+  // 降采样前做窗口均值低通，抑制 8kHz 以上频率混叠进目标频带
+  const win = Math.max(1, Math.round(ratio))
   const outLength = Math.floor(input.length / ratio)
   const out = new Float32Array(outLength)
   for (let i = 0; i < outLength; i++) {
-    const pos = i * ratio
-    const i0 = Math.floor(pos)
-    const i1 = Math.min(i0 + 1, input.length - 1)
-    const frac = pos - i0
-    out[i] = input[i0] * (1 - frac) + input[i1] * frac
+    const center = i * ratio
+    let sum = 0
+    let n = 0
+    for (let k = Math.floor(center - win / 2); k <= Math.ceil(center + win / 2); k++) {
+      if (k >= 0 && k < input.length) {
+        sum += input[k]
+        n += 1
+      }
+    }
+    out[i] = n > 0 ? sum / n : 0
   }
   return out
 }
@@ -60,7 +67,13 @@ export const createRecorder = async (): Promise<{
   level: () => number
 }> => {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-  const context = new AudioContext()
+  // 请求 16kHz 上下文：支持的内核直接输出高质量重采样，避免主线程裸插值
+  let context: AudioContext
+  try {
+    context = new AudioContext({ sampleRate: 16000 })
+  } catch {
+    context = new AudioContext()
+  }
   const source = context.createMediaStreamSource(stream)
   const processor = context.createScriptProcessor(4096, 1, 1)
   const chunks: Float32Array[] = []

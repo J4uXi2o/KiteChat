@@ -10,12 +10,12 @@ export const REPO_URL = 'https://github.com/J4uXi2o/KiteChat'
 export const SITE_URL = 'https://j4uxi2o.github.io/KiteChat/'
 export const QQ_GROUP = '195425971'
 
-const openExternal = (url: string) => {
+export const openExternal = (url: string) => {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 /** 数字分段比较版本号 */
-const compareVersions = (a: string, b: string): number => {
+export const compareVersions = (a: string, b: string): number => {
   const pa = a.split('.').map((n) => parseInt(n, 10) || 0)
   const pb = b.split('.').map((n) => parseInt(n, 10) || 0)
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {

@@ -46,11 +46,15 @@ export const siliconflowVoices = (model: string): VoiceOption[] =>
   SF_VOICE_NAMES.map(([id, label]) => ({ value: `${model}:${id}`, label }))
 
 export const voiceOptionsFor = (kind: string, ttsModel: string): VoiceOption[] => {
-  if (kind === 'deepseek') return DEEPSEEK_VOICES
+  if (kind === 'deepseek') {
+    return DEEPSEEK_VOICES
+  }
   if (kind === 'openai') {
     return ttsModel === 'tts-1' || ttsModel === 'tts-1-hd' ? OPENAI_LEGACY_VOICES : OPENAI_VOICES
   }
-  if (kind === 'siliconflow') return siliconflowVoices(ttsModel || 'FunAudioLLM/CosyVoice2-0.5B')
+  if (kind === 'siliconflow') {
+    return siliconflowVoices(ttsModel || 'FunAudioLLM/CosyVoice2-0.5B')
+  }
   return OPENAI_VOICES
 }
 

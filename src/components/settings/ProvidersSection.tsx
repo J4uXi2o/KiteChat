@@ -21,6 +21,22 @@ import { Select } from '../base/Select.js'
 import { showToast } from '../base/toastState.js'
 import styles from './Settings.module.css'
 
+/** 非本地 http:// 端点：密钥与对话将明文传输，给出提示 */
+const isInsecureRemote = (url: string): boolean => {
+  const match = /^http:\/\/([^/:?#]+)/i.exec(url.trim())
+  if (!match) {
+    return false
+  }
+  const host = match[1].toLowerCase()
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]' || host === '10.0.2.2') {
+    return false
+  }
+  if (/^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host) || host.endsWith('.local')) {
+    return false
+  }
+  return true
+}
+
 /** API 提供商管理：紧凑列表 + 弹窗编辑，预设收进添加弹窗 */
 export const ProvidersSection = () => {
   const t = useTranslate()
@@ -146,6 +162,9 @@ export const ProvidersSection = () => {
                   placeholder="https://example.com/v1"
                   onChange={(event) => setCustom({ ...custom, baseUrl: event.target.value })}
                 />
+                {isInsecureRemote(custom.baseUrl) ? (
+                  <div className={styles.slotWarn}>{t('providerInsecureHttp')}</div>
+                ) : null}
                 {addKind === 'chat' ? (
                   <Select
                     ariaLabel={t('providerProtocol')}
@@ -288,6 +307,9 @@ const ProviderEditModal = ({ provider, onClose }: { provider: Provider; onClose:
             value={provider.baseUrl}
             onChange={(event) => updateProvider(provider.id, { baseUrl: event.target.value.trim() })}
           />
+          {isInsecureRemote(provider.baseUrl) ? (
+            <span className={styles.slotWarn}>{t('providerInsecureHttp')}</span>
+          ) : null}
         </label>
         <label className={styles.formField}>
           <span>API Key</span>

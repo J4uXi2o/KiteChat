@@ -18,6 +18,19 @@ type Bridge = {
 export const getBridge = (): Bridge | undefined =>
   (window as unknown as { KiteNative?: Bridge }).KiteNative
 
+/** 回调表：状态放 Map；window 上的转发函数用 Reflect.deleteProperty 清理（原生按 window[name] 调用） */
+const nativeCallbacks = new Map<string, (raw: string) => void>()
+const registerCallback = (name: string, handler: (raw: string) => void) => {
+  nativeCallbacks.set(name, handler)
+  ;(window as unknown as Record<string, unknown>)[name] = (raw: string) => {
+    nativeCallbacks.get(name)?.(raw)
+  }
+}
+const unregisterCallback = (name: string) => {
+  nativeCallbacks.delete(name)
+  Reflect.deleteProperty(window as unknown as Record<string, unknown>, name)
+}
+
 export const nativeFetch = (req: {
   id?: string
   url: string
@@ -31,28 +44,33 @@ export const nativeFetch = (req: {
     return Promise.reject(new Error('no native bridge'))
   }
   const payload = JSON.stringify(req)
-  if (bridge.fetchAsync) {
+  const fetchAsync = bridge.fetchAsync
+  if (fetchAsync) {
     return new Promise((resolve, reject) => {
       const name = `__kiteNativeCb${Date.now()}${Math.floor(Math.random() * 1e6)}`
       const timer = setTimeout(() => {
-        delete (window as unknown as Record<string, unknown>)[name]
+        unregisterCallback(name)
         reject(new Error('native fetch timeout'))
       }, 320_000)
-      ;(window as unknown as Record<string, unknown>)[name] = (result: string) => {
+      registerCallback(name, (result) => {
         clearTimeout(timer)
-        delete (window as unknown as Record<string, unknown>)[name]
+        unregisterCallback(name)
         try {
           resolve(JSON.parse(result) as NativeResult)
         } catch {
           reject(new Error('bad native result'))
         }
-      }
-      bridge.fetchAsync!(payload, name)
+      })
+      fetchAsync(payload, name)
     })
   }
   // 旧版同步桥兜底
+  const fetchSync = bridge.fetch
+  if (!fetchSync) {
+    return Promise.reject(new Error('no native fetch method'))
+  }
   try {
-    return Promise.resolve(JSON.parse(bridge.fetch!(payload)) as NativeResult)
+    return Promise.resolve(JSON.parse(fetchSync(payload)) as NativeResult)
   } catch (error) {
     return Promise.reject(error instanceof Error ? error : new Error(String(error)))
   }
@@ -67,7 +85,8 @@ export const nativeFetchStream = (req: {
   body?: string
 }): Promise<{ status: number; headers: Record<string, string>; stream: ReadableStream<Uint8Array> }> => {
   const bridge = getBridge()
-  if (!bridge?.fetchStream) {
+  const fetchStream = bridge?.fetchStream
+  if (!fetchStream) {
     return Promise.reject(new Error('no native stream bridge'))
   }
   const payload = JSON.stringify(req)
@@ -86,7 +105,7 @@ export const nativeFetchStream = (req: {
     }, 320_000)
     const cleanup = () => {
       clearTimeout(timer)
-      delete (window as unknown as Record<string, unknown>)[name]
+      unregisterCallback(name)
     }
     const stream = new ReadableStream<Uint8Array>({
       start(c) {
@@ -99,7 +118,7 @@ export const nativeFetchStream = (req: {
         cleanup()
       },
     })
-    ;(window as unknown as Record<string, unknown>)[name] = (raw: string) => {
+    registerCallback(name, (raw: string) => {
       let msg: { type?: string; status?: number; headers?: Record<string, string>; data?: string; message?: string }
       try {
         msg = JSON.parse(raw)
@@ -131,8 +150,8 @@ export const nativeFetchStream = (req: {
           controller?.error(err)
         }
       }
-    }
-    bridge.fetchStream!(payload, name)
+    })
+    fetchStream(payload, name)
   })
 }
 

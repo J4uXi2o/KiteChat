@@ -26,6 +26,7 @@ export const ModelsSection = () => {
   const activeSearchId = useProviders((state) => state.activeSearchId)
   const searchMaxResults = useSettings((state) => state.searchMaxResults)
   const [showKey, setShowKey] = useState<Record<string, boolean>>({})
+  const [customFor, setCustomFor] = useState<FeatureSlot | null>(null)
 
   const chatProviders = providers.filter((provider) => provider.kind !== 'image')
   const imageProviders = providers.filter((provider) => provider.kind === 'image')
@@ -68,26 +69,47 @@ export const ModelsSection = () => {
                   setBinding(slot, { providerId, model: nextModels[0] ?? '' })
                 }}
               />
-              <input
-                className={styles.input}
-                list={`models-${slot}`}
+              <Select
+                ariaLabel={t('slotSelectModel')}
                 value={binding?.model ?? ''}
                 placeholder={t('slotSelectModel')}
-                disabled={!provider}
-                onChange={(event) => {
+                disabled={!provider || (models.length === 0 && !binding?.model)}
+                options={[
+                  ...(binding?.model && !models.includes(binding.model)
+                    ? [{ value: binding.model, label: binding.model }]
+                    : []),
+                  ...models.map((model) => ({ value: model, label: model })),
+                ]}
+                onChange={(model) => {
                   if (binding) {
-                    setBinding(slot, { ...binding, model: event.target.value })
+                    setBinding(slot, { ...binding, model })
                   }
                 }}
               />
-              <datalist id={`models-${slot}`}>
-                {models.map((model) => (
-                  <option key={model} value={model} />
-                ))}
-              </datalist>
             </div>
             {provider && models.length === 0 ? (
               <div className={styles.slotWarn}>{t('slotNoModels')}</div>
+            ) : null}
+            {provider ? (
+              <button
+                type="button"
+                className={styles.customModelToggle}
+                onClick={() => setCustomFor(customFor === slot ? null : slot)}
+              >
+                {t('slotCustomModel')}
+              </button>
+            ) : null}
+            {provider && customFor === slot ? (
+              <input
+                className={styles.input}
+                value={binding?.model ?? ''}
+                placeholder={t('slotCustomModelPlaceholder')}
+                onChange={(event) => {
+                  if (binding) {
+                    setBinding(slot, { ...binding, model: event.target.value.trim() })
+                  }
+                }}
+              />
             ) : null}
           </div>
         )

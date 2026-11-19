@@ -41,10 +41,14 @@ export const MessageContextMenu = ({ onEdit }: { onEdit: (messageId: string) => 
       closeTimer.current = setTimeout(close, 500)
     },
     onTouchEnd: () => {
-      if (closeTimer.current) clearTimeout(closeTimer.current)
+      if (closeTimer.current) {
+        clearTimeout(closeTimer.current)
+      }
     },
     onTouchMove: () => {
-      if (closeTimer.current) clearTimeout(closeTimer.current)
+      if (closeTimer.current) {
+        clearTimeout(closeTimer.current)
+      }
     },
   }
   void menu.x

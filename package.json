@@ -1,6 +1,6 @@
 {
   "name": "kitechat",
-  "version": "1.19.0",
+  "version": "1.20.0",
   "description": "KiteChat — 完全本地化的多提供商 AI 聊天盒子（基于 deepseek-ai/chat-demo，MIT）。",
   "license": "AGPL-3.0-only",
   "private": true,
@@ -9,6 +9,7 @@
     "dev": "rspack serve -c rspack.config.ts",
     "build": "node scripts/build.mjs",
     "type": "tsc -p tsconfig.json",
+    "test": "node scripts/run-tests.mjs",
     "lint": "oxlint src rspack.config.ts",
     "format": "oxfmt --write ."
   },
