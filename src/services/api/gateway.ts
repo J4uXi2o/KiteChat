@@ -609,7 +609,6 @@ async function* streamOpenAi(
     })
     for (const call of result.toolCalls) {
       toolUseCount += 1
-      searchesUsed += 1
       const toolId = `srvtoolu_search_${toolUseCount}`
       let query = ''
       try {
@@ -634,10 +633,17 @@ async function* streamOpenAi(
       index += 1
       let hits: SearchHit[] = []
       let failed = false
-      try {
-        hits = await executeSearch(body.search.provider, query, signal, body.search.maxResults)
-      } catch {
-        failed = true
+      if (searchesUsed < searchBudget) {
+        try {
+          // 总预算制：单次只请求剩余额度，累计实际返回条数
+          hits = await executeSearch(body.search.provider, query, signal, searchBudget - searchesUsed)
+        } catch {
+          failed = true
+        }
+      }
+      searchesUsed += hits.length
+      if (searchesUsed >= searchBudget) {
+        forceFinal = true
       }
       if (hits.length === 0) {
         emptyStreak += 1
@@ -918,17 +924,22 @@ async function* streamAnthropic(
     const toolResults: unknown[] = []
     for (const tool of result.toolUses) {
       toolUseCount += 1
-      searchesUsed += 1
       const query =
         typeof (tool.input as { query?: unknown })?.query === 'string'
           ? ((tool.input as { query: string }).query)
           : ''
       let hits: SearchHit[] = []
       let failed = false
-      try {
-        hits = await executeSearch(body.search.provider, query, signal, body.search.maxResults)
-      } catch {
-        failed = true
+      if (searchesUsed < searchBudget) {
+        try {
+          hits = await executeSearch(body.search.provider, query, signal, searchBudget - searchesUsed)
+        } catch {
+          failed = true
+        }
+      }
+      searchesUsed += hits.length
+      if (searchesUsed >= searchBudget) {
+        forceFinal = true
       }
       if (hits.length === 0) {
         emptyStreak += 1
