@@ -467,10 +467,22 @@ async function* streamOpenAi(
   let toolUseCount = 0
   let lastUsage: MessageUsage | undefined
   let stopReason: StopReason = 'end_turn'
-  const maxRounds = body.search ? 4 : 1
+  const maxRounds = body.search ? 6 : 1
   for (let round = 0; round < maxRounds; round++) {
-    const withTools = Boolean(body.search)
-    const result = await openAiRound(provider, body, messages, withTools, index, signal)
+    // 最后一轮撤掉工具，强制模型基于已有搜索结果输出最终回答，避免只思考不正文
+    const withTools = Boolean(body.search) && round < maxRounds - 1
+    const roundBody = withTools
+      ? body
+      : {
+          ...body,
+          system: [
+            body.system,
+            '你已经完成资料检索。现在必须直接输出给用户的最终回答正文，用中文、条理清晰并引用来源；不要再调用任何工具，也不要只输出思考过程。',
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
+        }
+    const result = await openAiRound(provider, roundBody, messages, withTools, index, signal)
     for (const event of result.events) {
       yield event
       if (event.type === 'content_block_stop') {
@@ -708,10 +720,22 @@ async function* streamAnthropic(
   let toolUseCount = 0
   let lastUsage: MessageUsage | undefined
   let stopReason: StopReason = 'end_turn'
-  const maxRounds = body.search ? 4 : 1
+  const maxRounds = body.search ? 6 : 1
   for (let round = 0; round < maxRounds; round++) {
-    const withTools = Boolean(body.search)
-    const result = await anthropicRound(provider, body, messages, withTools, signal)
+    // 最后一轮撤掉工具，强制模型基于已有搜索结果输出最终回答
+    const withTools = Boolean(body.search) && round < maxRounds - 1
+    const roundBody = withTools
+      ? body
+      : {
+          ...body,
+          system: [
+            body.system,
+            '你已经完成资料检索。现在必须直接输出给用户的最终回答正文，用中文、条理清晰并引用来源；不要再调用任何工具，也不要只输出思考过程。',
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
+        }
+    const result = await anthropicRound(provider, roundBody, messages, withTools, signal)
     for (const event of result.events) {
       yield event
     }

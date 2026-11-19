@@ -30,6 +30,7 @@ export const en = {
   copy: 'Copy',
   copied: 'Copied',
   copyFailed: 'Copy failed. Please long-press or select the text to copy.',
+  visionModelRequired: 'This model cannot read images. Bind a vision-capable model in Settings → Feature Models, or enable vision for it.',
   send: 'Send',
   editMessage: 'Edit message',
   regenerate: 'Regenerate',

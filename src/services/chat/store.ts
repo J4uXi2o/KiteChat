@@ -579,6 +579,12 @@ export const stopReply = (sessionId: string) => {
  * 提交指定会话的最新草稿；null 表示新建会话。
  * 生图模式开启且已绑定生图模型时走生图流程，否则走聊天流程。
  */
+/** 聊天绑定解析：请求含图片时优先识图槽位，其余走聊天绑定 */
+const resolveBindingForQuestion = (question: UserMessage) =>
+  question.files.some((file) => file.isImage)
+    ? (getBinding('vision') ?? resolveChatBinding())
+    : resolveChatBinding()
+
 export const sendMessage = (targetSessionId: string | null) => {
   if (get().importingHistory || !get().ready) {
     return false
@@ -592,7 +598,9 @@ export const sendMessage = (targetSessionId: string | null) => {
   const hasImages = prepared.files.some((file) => file.isImage)
   const chatBinding = imageBinding
     ? null
-    : (hasImages ? (getBinding('vision') ?? resolveChatBinding()) : resolveChatBinding())
+    : hasImages
+      ? (getBinding('vision') ?? resolveChatBinding())
+      : resolveChatBinding()
   if (!imageBinding && !chatBinding) {
     return false
   }
@@ -696,7 +704,7 @@ export const regenerateReply = (sessionId: string, messageId?: string) => {
     void streamImageReply(sessionId, reply, question, binding)
     return
   }
-  const binding = resolveChatBinding()
+  const binding = resolveBindingForQuestion(question)
   if (!binding) {
     return
   }
@@ -719,10 +727,6 @@ export const editMessage = (sessionId: string, messageId: string, content: strin
   if (!session || getStreamController(sessionId)) {
     return false
   }
-  const binding = resolveChatBinding()
-  if (!binding) {
-    return false
-  }
   const path = getVisibleMessages(session)
   const index = path.findIndex((message) => message.id === messageId)
   const previous = path[index]
@@ -736,6 +740,10 @@ export const editMessage = (sessionId: string, messageId: string, content: strin
     content: text,
     files: previous.files,
     createdAt: Date.now(),
+  }
+  const binding = resolveBindingForQuestion(question)
+  if (!binding) {
+    return false
   }
   const reply = createReply(binding.model)
   updateSession(sessionId, (s) => ({
@@ -778,7 +786,7 @@ export const continueReply = (sessionId: string, messageId: string) => {
   ) {
     return
   }
-  const binding = resolveChatBinding()
+  const binding = resolveBindingForQuestion(question)
   if (!binding) {
     return
   }
@@ -1038,6 +1046,16 @@ const streamReply = async (
     try {
       const contextUsers = getContextRounds(request.history).map(([user]) => user)
       const inline = await buildInlineFiles([...contextUsers, request.question])
+      // 聊天模型不支持识图时，剔除历史消息中的图片，避免纯文本模型收到图片报 VLM 错误
+      const modelName0 = initial.model ?? binding.model
+      if (!getModelSettings(binding.provider, modelName0).vision) {
+        const questionFileIds = new Set(request.question.files.map((f) => f.id))
+        for (const [fileId, entry] of [...inline.entries()]) {
+          if (entry.isImage && !questionFileIds.has(fileId)) {
+            inline.delete(fileId)
+          }
+        }
+      }
       const messages = toRequestMessages(
         request.history,
         request.question,
@@ -1127,9 +1145,11 @@ const streamReply = async (
           localMessage: error.localMessage,
         })
       } else {
+        const message = error instanceof Error ? error.message : String(error)
         reply = settleReply(reply, 'error', Date.now(), {
           kind: 'protocol',
-          message: error instanceof Error ? error.message : String(error),
+          message,
+          ...(/not a VLM|Vision Language Model|text-only prompts/i.test(message) ? { localMessage: { key: 'visionModelRequired' } } : {}),
         })
       }
     }
@@ -1297,9 +1317,11 @@ const streamImageReply = async (
         localMessage: error.localMessage,
       })
     } else {
+      const message = error instanceof Error ? error.message : String(error)
       reply = settleReply(reply, 'error', Date.now(), {
         kind: 'protocol',
-        message: error instanceof Error ? error.message : String(error),
+        message,
+        ...(/not a VLM|Vision Language Model|text-only prompts/i.test(message) ? { localMessage: { key: 'visionModelRequired' } } : {}),
       })
     }
   } finally {

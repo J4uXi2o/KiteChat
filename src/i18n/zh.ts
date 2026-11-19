@@ -26,6 +26,7 @@ export const zh = {
   copy: '复制',
   copied: '已复制',
   copyFailed: '复制失败，请长按或选中文本后复制',
+  visionModelRequired: '当前模型不支持识图。请在 设置→功能模型 绑定支持识图的模型，或为该模型开启识图能力。',
   send: '发送',
   editMessage: '编辑消息',
   regenerate: '重新生成',
