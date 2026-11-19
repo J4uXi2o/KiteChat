@@ -1,5 +1,6 @@
 import clsx from 'clsx'
 import { memo, useCallback, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { create } from 'zustand'
 import {
   IconKeyboardOutline16,
@@ -72,7 +73,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const chatBinding = useProviders((state) => state.bindings.chat)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const [toolsOpen, setToolsOpen] = useState(false)
+  const [attachOpen, setAttachOpen] = useState(false)
   const [voiceMode, setVoiceMode] = useState(false)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const modelMenuOpen = useModelMenu((state) => state.open)
@@ -194,36 +195,130 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
         </div>
       </div>
       )}
+      {imageMode ? (
+        <div className={styles.imageParamsRow}>
+          <span className={styles.imageModeTag}>
+            <IconImageOutline14 />
+            {t('imageModeSwitch')}
+          </span>
+          <ImageOptions />
+        </div>
+      ) : null}
       <div className={styles.functionRow}>
         <div className={styles.toggles}>
-          <button
-            type="button"
-            className={clsx(styles.toggle, toolsOpen && styles.selected)}
-            aria-label={t('toolsButton')}
-            aria-expanded={toolsOpen}
-            onClick={() => setToolsOpen((v) => !v)}
-          >
-            <IconPlusOutline16 />
-          </button>
-          {imageMode ? null : (
-          <button
-            type="button"
-            className={clsx(styles.toggle, styles.modelToggle)}
-            aria-label={t('modelSwitchTooltip')}
-            aria-haspopup="dialog"
-            aria-expanded={modelMenuOpen}
-            onClick={() => setModelMenuOpen(true)}
-          >
-            <IconChipOutline14 />
-            <span className={clsx(styles.toggleLabel, styles.modelLabel)}>{modelLabel}</span>
-            <IconChevronDownOutline14 />
-          </button>
+          <div className={styles.attachWrap}>
+            <button
+              type="button"
+              className={clsx(styles.plusButton, attachOpen && styles.plusOpen)}
+              aria-label={t('toolsButton')}
+              aria-expanded={attachOpen}
+              onClick={() => setAttachOpen((v) => !v)}
+            >
+              <IconPlusOutline16 />
+            </button>
+            {attachOpen ? createPortal(
+              <>
+                <div className={styles.attachMask} onClick={() => setAttachOpen(false)} />
+                <div className={styles.attachMenu} role="menu">
+                  <button
+                    type="button"
+                    className={styles.attachItem}
+                    onClick={() => {
+                      setAttachOpen(false)
+                      if (ensureApiKey()) {
+                        imageInputRef.current?.click()
+                      }
+                    }}
+                  >
+                    <IconImageOutline14 />
+                    {t('uploadImage')}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.attachItem}
+                    onClick={() => {
+                      setAttachOpen(false)
+                      if (ensureApiKey()) {
+                        fileInputRef.current?.click()
+                      }
+                    }}
+                  >
+                    <IconPaperclipOutline16 />
+                    {t('uploadFile')}
+                  </button>
+                </div>
+              </>,
+              document.body
+            ) : null}
+          </div>
+          {imageMode ? (
+            <button
+              type="button"
+              className={clsx(styles.iconToggle, styles.iconToggleActive)}
+              aria-label={t('imageModeExit')}
+              onClick={() => setImageMode(false)}
+            >
+              <IconImageOutline14 />
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className={clsx(styles.iconToggle, thinking && styles.iconToggleActive)}
+                aria-label={t('thinkingSwitch')}
+                aria-pressed={thinking}
+                disabled={!thinkEnabled}
+                onClick={() => setThinking(!thinking)}
+              >
+                <IconThinkOutline14 />
+              </button>
+              <button
+                type="button"
+                className={clsx(styles.iconToggle, search && styles.iconToggleActive)}
+                aria-label={t('searchSwitch')}
+                aria-pressed={search}
+                onClick={() => {
+                  if (!search && !getActiveSearchProvider()) {
+                    showToast({ key: 'searchNoProvider', type: 'error' })
+                    openSettings('models')
+                    return
+                  }
+                  setSearch(!search)
+                }}
+              >
+                <IconGlobeLanguageOutline14 />
+              </button>
+              <button
+                type="button"
+                className={styles.iconToggle}
+                aria-label={t('imageModeSwitch')}
+                onClick={() => {
+                  setImageMode(true)
+                  setSearch(false)
+                }}
+              >
+                <IconImageOutline14 />
+              </button>
+            </>
           )}
-          {thinking && !imageMode ? <span className={styles.activeChip}>{t('thinkingSwitch')}</span> : null}
-          {search && !imageMode ? <span className={styles.activeChip}>{t('searchSwitch')}</span> : null}
-          {imageMode ? <span className={styles.activeChip}>{t('imageModeSwitch')}</span> : null}
         </div>
         <div className={styles.right}>
+          {!imageMode ? (
+            <button
+              type="button"
+              className={clsx(styles.toggle, styles.modelToggle)}
+              aria-label={t('modelSwitchTooltip')}
+              aria-haspopup="dialog"
+              aria-expanded={modelMenuOpen}
+              onClick={() => setModelMenuOpen(true)}
+            >
+              <IconChipOutline14 />
+              {!isMobile ? (
+                <span className={clsx(styles.toggleLabel, styles.modelLabel)}>{modelLabel}</span>
+              ) : null}
+              <IconChevronDownOutline14 />
+            </button>
+          ) : null}
           {!imageMode ? (
             <IconButton
               size="m"
@@ -233,23 +328,11 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
               onClick={() => {
                 setVoiceMode((v) => !v)
                 if (!voiceMode) {
-                  setToolsOpen(false)
+                  setAttachOpen(false)
                 }
               }}
             />
           ) : null}
-          <IconButton
-            size="m"
-            tone="primary"
-            icon={<IconPaperclipOutline16 />}
-            tooltip={t('uploadFile')}
-            disabled={importingHistory}
-            onClick={() => {
-              if (ensureApiKey()) {
-                setToolsOpen(true)
-              }
-            }}
-          />
           <input
             ref={fileInputRef}
             type="file"
@@ -294,80 +377,6 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
           )}
         </div>
       </div>
-      {toolsOpen ? (
-        <div className={styles.toolsPanel}>
-          <div className={styles.toolsRow}>
-            {imageMode ? null : (
-            <button
-              type="button"
-              className={clsx(styles.toggle, thinking && styles.selected)}
-              disabled={!thinkEnabled}
-              onClick={() => setThinking(!thinking)}
-            >
-              <IconThinkOutline14 />
-              {t('thinkingSwitch')}
-            </button>
-            )}
-            {imageMode ? null : (
-            <button
-              type="button"
-              className={clsx(styles.toggle, search && styles.selected)}
-              onClick={() => {
-                if (!search && !getActiveSearchProvider()) {
-                  showToast({ key: 'searchNoProvider', type: 'error' })
-                  openSettings('models')
-                  return
-                }
-                setSearch(!search)
-              }}
-            >
-              <IconGlobeLanguageOutline14 />
-              {t('searchSwitch')}
-            </button>
-            )}
-            <button
-              type="button"
-              className={clsx(styles.toggle, imageMode && styles.selected)}
-              onClick={() => {
-                setImageMode(!imageMode)
-                if (!imageMode) {
-                  setSearch(false)
-                }
-              }}
-            >
-              <IconImageOutline14 />
-              {t('imageModeSwitch')}
-            </button>
-          </div>
-          <div className={styles.toolsRow}>
-            <button
-              type="button"
-              className={styles.toggle}
-              onClick={() => {
-                if (ensureApiKey()) {
-                  imageInputRef.current?.click()
-                }
-              }}
-            >
-              <IconImageOutline14 />
-              {t('uploadImage')}
-            </button>
-            <button
-              type="button"
-              className={styles.toggle}
-              onClick={() => {
-                if (ensureApiKey()) {
-                  fileInputRef.current?.click()
-                }
-              }}
-            >
-              <IconPaperclipOutline16 />
-              {t('uploadFile')}
-            </button>
-            {imageMode ? <ImageOptions /> : null}
-          </div>
-        </div>
-      ) : null}
       {dragging ? <DragMask /> : null}
       {modelMenuOpen ? (
         <div

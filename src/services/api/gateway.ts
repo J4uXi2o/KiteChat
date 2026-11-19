@@ -7,14 +7,17 @@
 import type { ModelSettings, Provider, SearchProvider } from '../providers/store.js'
 import { executeSearch, type SearchHit } from '../search/execute.js'
 import { ApiError, request } from './client.js'
+import { useSettings } from '../settings.js'
 import { readMessageEvent } from './parseEvent.js'
 import { readServerSentEvents } from './sse.js'
+import { DsmlStreamFilter, extractDsmlCalls } from './dsml.js'
 import type {
   MessageParam,
   MessageStreamEvent,
   MessageUsage,
   StopReason,
   WebSearchResult,
+  WebSearchToolResultBlock,
 } from './types.js'
 
 const joinUrl = (base: string, path: string) => `${base.replace(/\/+$/, '')}${path}`
@@ -237,29 +240,6 @@ const WEB_SEARCH_TOOL_OPENAI = {
   },
 }
 
-/** DeepSeek 原生文本工具调用标记（撤掉工具后模型可能以文本形式输出调用） */
-const DSML_MARKER = '<｜DSML｜'
-const DSML_INVOKE_RE = /<｜DSML｜invoke name="([^"]+)">([\s\S]*?)<\/｜DSML｜invoke>/g
-const DSML_PARAM_RE = /<｜DSML｜parameter name="([^"]+)"[^>]*>([\s\S]*?)<\/｜DSML｜parameter>/g
-
-/** 从文本中提取 DSML 工具调用；返回清理后的文本与调用列表 */
-const extractDsmlCalls = (text: string): { clean: string; calls: { name: string; query: string }[] } => {
-  const calls: { name: string; query: string }[] = []
-  let clean = text.replace(DSML_INVOKE_RE, (_m, name: string, body: string) => {
-    let query = ''
-    for (const p of body.matchAll(DSML_PARAM_RE)) {
-      if (p[1] === 'query') {
-        query = p[2].trim()
-      }
-    }
-    calls.push({ name, query })
-    return ''
-  })
-  // 清理残留标记（未闭合的 calls 包裹、流式截断的半个标记等）
-  clean = clean.replace(/<\/?｜DSML｜[^>]*>?/g, '').replace(/<｜DSML｜[\s\S]*$/, '')
-  return { clean: clean.trim(), calls }
-}
-
 type OpenAiRound = {
   events: MessageStreamEvent[]
   toolCalls: OpenAiToolCall[]
@@ -308,9 +288,7 @@ async function openAiRound(
   let stopReason: StopReason = 'end_turn'
   let finalUsage: MessageUsage | undefined
   let assistantText = ''
-  let dsmlBuffer = ''
-  let inDsml = false
-  const dsmlCalls: { name: string; query: string }[] = []
+  const dsmlFilter = new DsmlStreamFilter()
   const toolAcc = new Map<number, { id: string; name: string; args: string }>()
 
   /** 过滤正文中的 DSML 工具调用标记，完整调用收集为工具请求 */
@@ -327,42 +305,7 @@ async function openAiRound(
     events.push({ type: 'content_block_delta', index, delta: { type: 'text_delta', text: chunk } })
   }
   const feedText = (chunk: string) => {
-    dsmlBuffer += chunk
-    for (;;) {
-      if (!inDsml) {
-        const marker = dsmlBuffer.indexOf(DSML_MARKER)
-        if (marker < 0) {
-          // 保留可能是标记开头的尾部，其余输出
-          let keep = 0
-          const maxPrefix = Math.min(dsmlBuffer.length, DSML_MARKER.length - 1)
-          for (let k = maxPrefix; k > 0; k--) {
-            if (DSML_MARKER.startsWith(dsmlBuffer.slice(-k))) {
-              keep = k
-              break
-            }
-          }
-          const emit = dsmlBuffer.slice(0, dsmlBuffer.length - keep)
-          dsmlBuffer = dsmlBuffer.slice(dsmlBuffer.length - keep)
-          pushVisibleText(emit)
-          return
-        }
-        pushVisibleText(dsmlBuffer.slice(0, marker))
-        dsmlBuffer = dsmlBuffer.slice(marker)
-        inDsml = true
-      }
-      const end = dsmlBuffer.indexOf('</｜DSML｜calls>')
-      if (end < 0) {
-        return
-      }
-      const blockText = dsmlBuffer.slice(0, end + '</｜DSML｜calls>'.length)
-      dsmlBuffer = dsmlBuffer.slice(end + '</｜DSML｜calls>'.length)
-      inDsml = false
-      const extracted = extractDsmlCalls(blockText)
-      dsmlCalls.push(...extracted.calls)
-      if (extracted.clean) {
-        pushVisibleText(extracted.clean)
-      }
-    }
+    pushVisibleText(dsmlFilter.feed(chunk))
   }
 
   const closeBlock = () => {
@@ -516,17 +459,10 @@ async function openAiRound(
     }
   }
   // 流结束：处理残留缓冲（完整调用提取，截断标记丢弃）
-  if (dsmlBuffer) {
-    const extracted = extractDsmlCalls(dsmlBuffer)
-    dsmlCalls.push(...extracted.calls)
-    if (extracted.clean) {
-      pushVisibleText(extracted.clean)
-    }
-    dsmlBuffer = ''
-  }
+  pushVisibleText(dsmlFilter.flush())
   closeBlock()
   // DSML 文本调用转成标准工具调用
-  for (const call of dsmlCalls) {
+  for (const call of dsmlFilter.calls) {
     if (call.name === 'web_search' && call.query) {
       toolAcc.set(toolAcc.size + 1000, {
         id: `dsml_${toolAcc.size + 1}`,
@@ -557,6 +493,111 @@ const hitsToResults = (hits: SearchHit[]): WebSearchResult[] =>
     page_age: hit.page_age,
   }))
 
+/** 搜索循环的协议无关驱动：预算控制、无结果收尾、工具事件发射两条协议共用 */
+type SearchToolCall = { id: string; query: string }
+
+type SearchLoopState = {
+  round: number
+  searchesUsed: number
+  emptyStreak: number
+  forceFinal: boolean
+}
+
+const MAX_SEARCH_ROUNDS = 8
+
+const searchLoopInit = (): SearchLoopState => ({
+  round: 0,
+  searchesUsed: 0,
+  emptyStreak: 0,
+  forceFinal: false,
+})
+
+/** 本轮是否仍带工具；预算耗尽/连续无结果/最后一轮强制收尾 */
+const searchLoopWithTools = (state: SearchLoopState, body: GatewayRequest): boolean =>
+  Boolean(body.search) &&
+  !state.forceFinal &&
+  state.round < MAX_SEARCH_ROUNDS - 1 &&
+  state.searchesUsed < (body.search?.maxResults ?? 20)
+
+/** 收尾轮的系统提示：按界面语言输出，不再硬编码中文 */
+const searchFinalBody = (state: SearchLoopState, body: GatewayRequest): GatewayRequest => {
+  const zh = useSettings.getState().locale === 'zh-CN'
+  const note = state.emptyStreak > 0
+    ? (zh
+        ? '搜索未能找到更多相关结果。请基于已有信息直接回答；确实查不到就如实说明查不到，不要编造。'
+        : 'No further relevant results were found. Answer directly from what you have; if you truly cannot find it, say so honestly instead of making things up.')
+    : (zh
+        ? '你已经完成资料检索。现在必须直接输出给用户的最终回答正文，条理清晰并引用来源。'
+        : 'You have finished gathering sources. Now output the final answer body for the user directly, well-structured and citing sources.')
+  const ban = zh
+    ? '禁止再调用任何工具，禁止输出任何工具调用标记或代码，也不要只输出思考过程。'
+    : 'Do not call any more tools, do not output tool-call markup or code, and do not output only a reasoning trace.'
+  const lang = zh ? '请用中文回答。' : 'Answer in English.'
+  return {
+    ...body,
+    system: [body.system, note + ban + lang].filter(Boolean).join('\n\n'),
+  }
+}
+
+/** 执行一个工具调用：预算内搜索、累计用量、发射工具事件，返回结果供协议回填 */
+const runSearchCall = async function* (
+  state: SearchLoopState,
+  body: GatewayRequest,
+  call: SearchToolCall,
+  index: number,
+  signal: AbortSignal
+): AsyncGenerator<MessageStreamEvent, { hits: SearchHit[]; failed: boolean; nextIndex: number }> {
+  const budget = body.search?.maxResults ?? 20
+  yield {
+    type: 'content_block_start',
+    index,
+    content_block: {
+      type: 'server_tool_use',
+      id: call.id,
+      name: 'web_search',
+      input: { action: 'search', queries: call.query ? [call.query] : [] },
+      caller: { type: 'direct' },
+      kind: 'search',
+    },
+  }
+  yield { type: 'content_block_stop', index }
+  let hits: SearchHit[] = []
+  let failed = false
+  if (state.searchesUsed < budget && body.search) {
+    try {
+      hits = await executeSearch(body.search.provider, call.query, signal, budget - state.searchesUsed)
+    } catch {
+      failed = true
+    }
+  }
+  state.searchesUsed += hits.length
+  if (state.searchesUsed >= budget) {
+    state.forceFinal = true
+  }
+  if (hits.length === 0) {
+    state.emptyStreak += 1
+    if (state.emptyStreak >= 2) {
+      state.forceFinal = true
+    }
+  } else {
+    state.emptyStreak = 0
+  }
+  const resultBlock: WebSearchToolResultBlock = {
+    type: 'web_search_tool_result',
+    tool_use_id: call.id,
+    content: failed
+      ? [{ type: 'web_search_tool_result_error', error_code: 'unavailable' }]
+      : hitsToResults(hits),
+    kind: 'search',
+  }
+  yield { type: 'content_block_start', index: index + 1, content_block: resultBlock }
+  yield { type: 'content_block_stop', index: index + 1 }
+  return { hits, failed, nextIndex: index + 2 }
+}
+
+const searchHitsPayload = (hits: SearchHit[]): string =>
+  JSON.stringify(hits.map((hit) => ({ title: hit.title, url: hit.url, snippet: hit.snippet })))
+
 async function* streamOpenAi(
   provider: Provider,
   body: GatewayRequest,
@@ -565,31 +606,20 @@ async function* streamOpenAi(
   const messages = toOpenAiMessages(body.system, body.messages)
   yield { type: 'message_start', message: { id: '', model: body.model } }
   let index = 0
-  let toolUseCount = 0
   let lastUsage: MessageUsage | undefined
   let stopReason: StopReason = 'end_turn'
-  const maxRounds = body.search ? 8 : 1
-  const searchBudget = body.search?.maxResults ?? 20
-  let searchesUsed = 0
-  let emptyStreak = 0
-  let forceFinal = false
-  for (let round = 0; round < maxRounds; round++) {
-    // 预算耗尽 / 连续无结果 / 最后一轮：撤掉工具强制收尾
-    const withTools = Boolean(body.search) && !forceFinal && round < maxRounds - 1 && searchesUsed < searchBudget
-    const finalNote = emptyStreak > 0
-      ? '搜索未能找到更多相关结果。请基于已有信息直接回答；确实查不到就如实说明查不到，不要编造。'
-      : '你已经完成资料检索。现在必须直接输出给用户的最终回答正文，用中文、条理清晰并引用来源。'
-    const roundBody = withTools
-      ? body
-      : {
-          ...body,
-          system: [
-            body.system,
-            finalNote + '禁止再调用任何工具，禁止输出任何工具调用标记或代码，也不要只输出思考过程。',
-          ]
-            .filter(Boolean)
-            .join('\n\n'),
-        }
+  const loop = searchLoopInit()
+  for (; loop.round < MAX_SEARCH_ROUNDS; loop.round++) {
+    const withTools = searchLoopWithTools(loop, body)
+    const roundBody = withTools ? body : searchFinalBody(loop, body)
+    // messages 在循环外构建，收尾轮的系统提示需同步进数组首位才能生效
+    if (!withTools && roundBody.system.trim()) {
+      if (messages[0]?.role === 'system') {
+        messages[0] = { role: 'system', content: roundBody.system }
+      } else {
+        messages.unshift({ role: 'system', content: roundBody.system })
+      }
+    }
     const result = await openAiRound(provider, roundBody, messages, withTools, index, signal)
     for (const event of result.events) {
       yield event
@@ -608,8 +638,6 @@ async function* streamOpenAi(
       tool_calls: result.toolCalls,
     })
     for (const call of result.toolCalls) {
-      toolUseCount += 1
-      const toolId = `srvtoolu_search_${toolUseCount}`
       let query = ''
       try {
         const args = JSON.parse(call.function.arguments || '{}') as { query?: unknown }
@@ -617,63 +645,15 @@ async function* streamOpenAi(
       } catch {
         query = ''
       }
-      yield {
-        type: 'content_block_start',
+      const { hits, nextIndex } = yield* runSearchCall(
+        loop,
+        body,
+        { id: call.id, query },
         index,
-        content_block: {
-          type: 'server_tool_use',
-          id: toolId,
-          name: 'web_search',
-          input: { action: 'search', queries: query ? [query] : [] },
-          caller: { type: 'direct' },
-          kind: 'search',
-        },
-      }
-      yield { type: 'content_block_stop', index }
-      index += 1
-      let hits: SearchHit[] = []
-      let failed = false
-      if (searchesUsed < searchBudget) {
-        try {
-          // 总预算制：单次只请求剩余额度，累计实际返回条数
-          hits = await executeSearch(body.search.provider, query, signal, searchBudget - searchesUsed)
-        } catch {
-          failed = true
-        }
-      }
-      searchesUsed += hits.length
-      if (searchesUsed >= searchBudget) {
-        forceFinal = true
-      }
-      if (hits.length === 0) {
-        emptyStreak += 1
-        if (emptyStreak >= 2) {
-          forceFinal = true
-        }
-      } else {
-        emptyStreak = 0
-      }
-      yield {
-        type: 'content_block_start',
-        index,
-        content_block: {
-          type: 'web_search_tool_result',
-          tool_use_id: toolId,
-          content: failed
-            ? [{ type: 'web_search_tool_result_error', error_code: 'unavailable' }]
-            : hitsToResults(hits),
-          kind: 'search',
-        },
-      }
-      yield { type: 'content_block_stop', index }
-      index += 1
-      messages.push({
-        role: 'tool',
-        tool_call_id: call.id,
-        content: JSON.stringify(
-          hits.map((hit) => ({ title: hit.title, url: hit.url, snippet: hit.snippet }))
-        ),
-      })
+        signal
+      )
+      index = nextIndex
+      messages.push({ role: 'tool', tool_call_id: call.id, content: searchHitsPayload(hits) })
     }
   }
   yield {
@@ -746,9 +726,7 @@ async function anthropicRound(
   let stopReason: StopReason = 'end_turn'
   let lastUsage: MessageUsage | undefined
   let inputTokens = 0
-  let dsmlBuffer = ''
-  let inDsml = false
-  const dsmlTextCalls: { name: string; query: string }[] = []
+  const dsmlFilter = new DsmlStreamFilter()
 
   for await (const { event: eventName, data } of readServerSentEvents(response.body, signal)) {
     let payload: unknown
@@ -792,41 +770,9 @@ async function anthropicRound(
         jsonAcc.set(i, (jsonAcc.get(i) ?? '') + delta.partial_json)
       }
       if (block && delta.type === 'text_delta' && typeof delta.text === 'string') {
-        block.text = ((block.text as string) ?? '') + delta.text
-        // DSML 文本工具调用：缓冲过滤，完整调用提取
-        dsmlBuffer += delta.text
-        let visible = ''
-        for (;;) {
-          if (!inDsml) {
-            const marker = dsmlBuffer.indexOf(DSML_MARKER)
-            if (marker < 0) {
-              let keep = 0
-              const maxPrefix = Math.min(dsmlBuffer.length, DSML_MARKER.length - 1)
-              for (let k = maxPrefix; k > 0; k--) {
-                if (DSML_MARKER.startsWith(dsmlBuffer.slice(-k))) {
-                  keep = k
-                  break
-                }
-              }
-              visible += dsmlBuffer.slice(0, dsmlBuffer.length - keep)
-              dsmlBuffer = dsmlBuffer.slice(dsmlBuffer.length - keep)
-              break
-            }
-            visible += dsmlBuffer.slice(0, marker)
-            dsmlBuffer = dsmlBuffer.slice(marker)
-            inDsml = true
-          }
-          const end = dsmlBuffer.indexOf('</｜DSML｜calls>')
-          if (end < 0) {
-            break
-          }
-          const blockText = dsmlBuffer.slice(0, end + '</｜DSML｜calls>'.length)
-          dsmlBuffer = dsmlBuffer.slice(end + '</｜DSML｜calls>'.length)
-          inDsml = false
-          const extracted = extractDsmlCalls(blockText)
-          dsmlTextCalls.push(...extracted.calls)
-          visible += extracted.clean
-        }
+        // DSML 文本工具调用：共享过滤器缓冲提取，正文只保留可见部分
+        const visible = dsmlFilter.feed(delta.text)
+        block.text = ((block.text as string) ?? '') + visible
         delta.text = visible
         if (!visible) {
           continue
@@ -871,8 +817,9 @@ async function anthropicRound(
       break
     }
   }
-  // DSML 文本调用转成标准 tool_use
-  for (const call of dsmlTextCalls) {
+  // 流结束残留缓冲处理 + DSML 文本调用转成标准 tool_use
+  dsmlFilter.flush()
+  for (const call of dsmlFilter.calls) {
     if (call.name === 'web_search' && call.query) {
       toolUses.push({ id: `dsml_${toolUses.length + 1}`, name: 'web_search', input: { query: call.query } })
     }
@@ -887,33 +834,19 @@ async function* streamAnthropic(
 ): AsyncGenerator<MessageStreamEvent> {
   const messages: unknown[] = [...body.messages]
   yield { type: 'message_start', message: { id: '', model: body.model } }
-  let toolUseCount = 0
+  let index = 0
   let lastUsage: MessageUsage | undefined
   let stopReason: StopReason = 'end_turn'
-  const maxRounds = body.search ? 8 : 1
-  const searchBudget = body.search?.maxResults ?? 20
-  let searchesUsed = 0
-  let emptyStreak = 0
-  let forceFinal = false
-  for (let round = 0; round < maxRounds; round++) {
-    const withTools = Boolean(body.search) && !forceFinal && round < maxRounds - 1 && searchesUsed < searchBudget
-    const finalNote = emptyStreak > 0
-      ? '搜索未能找到更多相关结果。请基于已有信息直接回答；确实查不到就如实说明查不到，不要编造。'
-      : '你已经完成资料检索。现在必须直接输出给用户的最终回答正文，用中文、条理清晰并引用来源。'
-    const roundBody = withTools
-      ? body
-      : {
-          ...body,
-          system: [
-            body.system,
-            finalNote + '禁止再调用任何工具，禁止输出任何工具调用标记或代码，也不要只输出思考过程。',
-          ]
-            .filter(Boolean)
-            .join('\n\n'),
-        }
+  const loop = searchLoopInit()
+  for (; loop.round < MAX_SEARCH_ROUNDS; loop.round++) {
+    const withTools = searchLoopWithTools(loop, body)
+    const roundBody = withTools ? body : searchFinalBody(loop, body)
     const result = await anthropicRound(provider, roundBody, messages, withTools, signal)
     for (const event of result.events) {
       yield event
+      if (event.type === 'content_block_stop') {
+        index = Math.max(index, event.index + 1)
+      }
     }
     lastUsage = result.usage ?? lastUsage
     stopReason = result.stopReason
@@ -923,58 +856,19 @@ async function* streamAnthropic(
     messages.push({ role: 'assistant', content: result.assistantContent })
     const toolResults: unknown[] = []
     for (const tool of result.toolUses) {
-      toolUseCount += 1
       const query =
         typeof (tool.input as { query?: unknown })?.query === 'string'
           ? ((tool.input as { query: string }).query)
           : ''
-      let hits: SearchHit[] = []
-      let failed = false
-      if (searchesUsed < searchBudget) {
-        try {
-          hits = await executeSearch(body.search.provider, query, signal, searchBudget - searchesUsed)
-        } catch {
-          failed = true
-        }
-      }
-      searchesUsed += hits.length
-      if (searchesUsed >= searchBudget) {
-        forceFinal = true
-      }
-      if (hits.length === 0) {
-        emptyStreak += 1
-        if (emptyStreak >= 2) {
-          forceFinal = true
-        }
-      } else {
-        emptyStreak = 0
-      }
-      const resultBlock = {
-        type: 'web_search_tool_result',
-        tool_use_id: tool.id,
-        content: failed
-          ? [{ type: 'web_search_tool_result_error', error_code: 'unavailable' }]
-          : hitsToResults(hits),
-        kind: 'search',
-      }
-      yield { type: 'content_block_start', index: 1000 + toolUseCount * 2, content_block: {
-        type: 'server_tool_use',
-        id: tool.id,
-        name: 'web_search',
-        input: { action: 'search', queries: query ? [query] : [] },
-        caller: { type: 'direct' },
-        kind: 'search',
-      } }
-      yield { type: 'content_block_stop', index: 1000 + toolUseCount * 2 }
-      yield { type: 'content_block_start', index: 1000 + toolUseCount * 2 + 1, content_block: resultBlock as never }
-      yield { type: 'content_block_stop', index: 1000 + toolUseCount * 2 + 1 }
-      toolResults.push({
-        type: 'tool_result',
-        tool_use_id: tool.id,
-        content: JSON.stringify(
-          hits.map((hit) => ({ title: hit.title, url: hit.url, snippet: hit.snippet }))
-        ),
-      })
+      const { hits, nextIndex } = yield* runSearchCall(
+        loop,
+        body,
+        { id: tool.id, query },
+        index,
+        signal
+      )
+      index = nextIndex
+      toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: searchHitsPayload(hits) })
     }
     messages.push({ role: 'user', content: toolResults })
   }
@@ -1132,8 +1026,15 @@ export const generateImage = async (
         signal: combined,
       })
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (/尺寸|size/i.test(message) && size !== '1024x1024') {
+      // 尺寸不支持时降级到 1024x1024 重试一次：仅对 4xx 参数类错误生效，
+      // 结合错误体里的 size/dimension 字段或错误码判断，不依赖厂商报错措辞
+      const isSizeError =
+        error instanceof ApiError &&
+        error.status !== undefined &&
+        error.status >= 400 &&
+        error.status < 500 &&
+        /"?(size|dimensions?|resolution)"?\s*[:=]|invalid[_ ]?(size|parameter)|unsupported[_ ]?(size|resolution)|尺寸|分辨率/i.test(error.message)
+      if (isSizeError && size !== '1024x1024') {
         response = await request(joinUrl(provider.baseUrl, '/images/generations'), {
           method: 'POST',
           headers: { ...authHeaders(provider), 'Content-Type': 'application/json' },

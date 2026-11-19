@@ -459,7 +459,7 @@
   min-width: 0;
 }
 .modelLabel {
-  max-width: 32vw;
+  max-width: min(32vw, 200px);
 }
 
 .imageOptions {
@@ -581,5 +581,135 @@
 .voiceOverlayHint {
   font-size: 12px;
   opacity: 0.9;
+  white-space: nowrap;
+}
+
+/* ===== KiteChat：输入栏左侧轻量＋钮与面板网格 ===== */
+.plusButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.plusButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.plusButton svg {
+  transition: transform 0.2s ease;
+}
+.plusOpen {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+.plusOpen svg {
+  transform: rotate(45deg);
+}
+.toolsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+.toolsGrid .toggle {
+  width: 100%;
+  min-width: 0;
+  justify-content: center;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* ===== KiteChat：单行图标工具条 + 上传小菜单 + 生图参数行 ===== */
+.attachWrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.attachMask {
+  position: fixed;
+  inset: 0;
+  z-index: 69;
+}
+.attachMenu {
+  position: fixed;
+  bottom: calc(118px + var(--kitechat-safe-bottom, 0px) + var(--kitechat-keyboard, 0px));
+  left: 16px;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 148px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+.attachItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.attachItem:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.iconToggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.iconToggle:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.iconToggle:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.iconToggleActive {
+  background: var(--dsw-alias-button-ghost-active-fill);
+  color: var(--dsw-alias-brand-text);
+}
+.imageParamsRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px 0;
+}
+.imageModeTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--dsw-alias-button-ghost-active-fill);
+  color: var(--dsw-alias-brand-text);
+  font-size: 12px;
+  font-weight: 600;
   white-space: nowrap;
 }

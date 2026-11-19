@@ -3,6 +3,7 @@ export type NativeResult = { status: number; headers?: Record<string, string>; b
 
 type Bridge = {
   fetchAsync?: (req: string, callbackName: string) => void
+  fetchStream?: (req: string, callbackName: string) => void
   fetch?: (req: string) => string
   cancel?: (id: string) => void
   notify?: (title: string, body: string) => void
@@ -55,6 +56,84 @@ export const nativeFetch = (req: {
   } catch (error) {
     return Promise.reject(error instanceof Error ? error : new Error(String(error)))
   }
+}
+
+/** 原生分块流式请求：meta → chunk* → done，返回可读字节流（跨域回退时保持真流式） */
+export const nativeFetchStream = (req: {
+  id?: string
+  url: string
+  method?: string
+  headers?: Record<string, string>
+  body?: string
+}): Promise<{ status: number; headers: Record<string, string>; stream: ReadableStream<Uint8Array> }> => {
+  const bridge = getBridge()
+  if (!bridge?.fetchStream) {
+    return Promise.reject(new Error('no native stream bridge'))
+  }
+  const payload = JSON.stringify(req)
+  return new Promise((resolve, reject) => {
+    const name = `__kiteNativeStream${Date.now()}${Math.floor(Math.random() * 1e6)}`
+    let settled = false
+    let controller: ReadableStreamDefaultController<Uint8Array> | null = null
+    const timer = setTimeout(() => {
+      cleanup()
+      if (!settled) {
+        settled = true
+        reject(new Error('native stream timeout'))
+      } else {
+        controller?.error(new Error('native stream timeout'))
+      }
+    }, 320_000)
+    const cleanup = () => {
+      clearTimeout(timer)
+      delete (window as unknown as Record<string, unknown>)[name]
+    }
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c
+      },
+      cancel() {
+        if (req.id) {
+          bridge.cancel?.(req.id)
+        }
+        cleanup()
+      },
+    })
+    ;(window as unknown as Record<string, unknown>)[name] = (raw: string) => {
+      let msg: { type?: string; status?: number; headers?: Record<string, string>; data?: string; message?: string }
+      try {
+        msg = JSON.parse(raw)
+      } catch {
+        return
+      }
+      if (msg.type === 'meta') {
+        if (!settled) {
+          settled = true
+          resolve({ status: msg.status ?? 0, headers: msg.headers ?? {}, stream })
+        }
+      } else if (msg.type === 'chunk' && typeof msg.data === 'string') {
+        const binary = atob(msg.data)
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i)
+        }
+        controller?.enqueue(bytes)
+      } else if (msg.type === 'done') {
+        cleanup()
+        controller?.close()
+      } else if (msg.type === 'error') {
+        cleanup()
+        const err = new Error(msg.message ?? 'native stream error')
+        if (!settled) {
+          settled = true
+          reject(err)
+        } else {
+          controller?.error(err)
+        }
+      }
+    }
+    bridge.fetchStream!(payload, name)
+  })
 }
 
 /** base64 转 Blob */

@@ -1,6 +1,6 @@
 import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
-import { memo, useEffect, useState, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   IconBrowseOutline16,
   IconBrowseWarningOutline16,
@@ -64,21 +64,43 @@ export const ReplyArea = memo(function ReplyArea({
   streaming: boolean
   hasResponse: boolean
 }) {
-  useTranslate()
-  const [open, setOpen] = useState(true)
+  const t = useTranslate()
+  // 挂载即按流式状态初始化（避免 effect 晚于内容到达把展开态覆盖回去）；
+  // 正文开始输出后自动收起，手动操作优先
+  const [open, setOpen] = useState(() => streaming && !hasResponse)
+  const userToggled = useRef(false)
   const titleActive = streaming && !hasResponse
   useTicker(titleActive, 1000)
+  useEffect(() => {
+    if (userToggled.current) {
+      return
+    }
+    if (hasResponse || !streaming) {
+      setOpen(false)
+    } else {
+      setOpen(true)
+    }
+  }, [streaming, hasResponse])
   if (view.steps.length === 0 && !(message.thinking && streaming)) {
     return null
   }
   // 未记录请求开关时，按是否有思考内容显示标题。
   const thinking = message.thinking ?? view.steps.some((step) => step.type === 'thinking')
-  const title = thinking ? getAreaTitle(view, streaming, Date.now(), hasResponse) : null
+  // 有步骤就始终给标题（兜底文案），保证任何情况下都能折叠
+  const title =
+    (thinking ? getAreaTitle(view, streaming, Date.now(), hasResponse) : null) ??
+    (streaming ? t('messageThinking') : t('messageProcess'))
   const stopped = !streaming && !hasResponse
   return (
     <div className={styles.area}>
       {title ? (
-        <div className={styles.title} onClick={() => setOpen((value) => !value)}>
+        <div
+          className={styles.title}
+          onClick={() => {
+            userToggled.current = true
+            setOpen((value) => !value)
+          }}
+        >
           <span className={clsx(styles.titleIcon, stopped && styles.stoppedIcon)}>
             <IconThinkOutline16 />
           </span>
@@ -86,7 +108,7 @@ export const ReplyArea = memo(function ReplyArea({
           {open ? <IconChevronDownOutline14 /> : <IconChevronRightOutline14 />}
         </div>
       ) : null}
-      {open || !title ? (
+      {open ? (
         <div className={styles.steps}>
           {view.steps.map((step, index) => (
             <StepItem

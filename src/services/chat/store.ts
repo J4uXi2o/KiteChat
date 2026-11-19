@@ -976,8 +976,10 @@ const buildInlineFiles = async (messages: UserMessage[]): Promise<InlineFiles> =
 
 // ---------- 标题生成 ----------
 
-const TITLE_PROMPT =
-  '根据以下用户消息生成一个不超过 16 个字的简短对话标题。只输出标题本身，不要引号、标点或解释。'
+const titlePrompt = () =>
+  useSettings.getState().locale === 'zh-CN'
+    ? '根据以下用户消息生成一个不超过 16 个字的简短对话标题。只输出标题本身，不要引号、标点或解释。'
+    : 'Generate a short conversation title (at most 6 words) from the user message below. Output only the title itself, without quotes, punctuation or explanation.'
 
 const generateTitle = async (
   sessionId: string,
@@ -993,7 +995,7 @@ const generateTitle = async (
       binding.provider,
       {
         model: binding.model,
-        system: TITLE_PROMPT,
+        system: titlePrompt(),
         messages: [{ role: 'user', content: question.content.slice(0, 500) }],
         maxTokens: 512,
       },

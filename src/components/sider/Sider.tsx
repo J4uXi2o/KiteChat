@@ -75,7 +75,7 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
       </div>
       <button
         type="button"
-        className={styles.newChat}
+        className={clsx(styles.newChat, mobile && styles.newChatHidden)}
         onClick={() => {
           newChat()
           closeMobileSider()

@@ -1,5 +1,5 @@
 import { translate, type TranslationMessage } from '../../i18n/index.js'
-import { getBridge, nativeFetch as nativeCall } from '../native.js'
+import { getBridge, nativeFetch as nativeCall, nativeFetchStream } from '../native.js'
 import type { ApiErrorBody } from './types.js'
 
 /**
@@ -90,6 +90,39 @@ const nativeFetch = async (url: string, init: RequestInit): Promise<Response | n
   }
 }
 
+/** 原生分块流式回退：把原生 meta/chunk/done 通道包成标准 Response */
+const nativeStreamFetch = async (url: string, init: RequestInit): Promise<Response | null> => {
+  const bridge = getBridge()
+  if (!bridge?.fetchStream) {
+    return null
+  }
+  const headers: Record<string, string> = {}
+  const raw = init.headers
+  if (raw) {
+    if (raw instanceof Headers) {
+      raw.forEach((value, key) => {
+        headers[key] = value
+      })
+    } else if (Array.isArray(raw)) {
+      for (const [key, value] of raw) {
+        headers[key] = value
+      }
+    } else {
+      Object.assign(headers, raw)
+    }
+  }
+  const body = typeof init.body === 'string' ? init.body : undefined
+  const id = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const onAbort = () => bridge.cancel?.(id)
+  init.signal?.addEventListener('abort', onAbort, { once: true })
+  try {
+    const result = await nativeFetchStream({ id, url, method: init.method ?? 'GET', headers, body })
+    return new Response(result.stream, { status: result.status, headers: result.headers })
+  } finally {
+    init.signal?.removeEventListener('abort', onAbort)
+  }
+}
+
 export const request = async (url: string, init: RequestInit): Promise<Response> => {
   let response: Response
   try {
@@ -98,7 +131,9 @@ export const request = async (url: string, init: RequestInit): Promise<Response>
     if (init.signal?.aborted) {
       throw error
     }
-    const fallback = await nativeFetch(url, init).catch(() => null)
+    // 优先原生分块流式通道（保持真流式）；不支持时退回全量缓冲
+    const streamFallback = await nativeStreamFetch(url, init).catch(() => null)
+    const fallback = streamFallback ?? (await nativeFetch(url, init).catch(() => null))
     if (!fallback) {
       throw new ApiError('network', error instanceof Error ? error.message : String(error))
     }

@@ -173,6 +173,8 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public void setNativeTheme(final boolean dark) {
+            // 持久化主题供下次冷启动读取，替代解析 WebView leveldb 的脆弱做法
+            getSharedPreferences("kitechat", MODE_PRIVATE).edit().putBoolean("dark", dark).apply();
             runOnUiThread(() -> {
                 androidx.core.view.WindowInsetsControllerCompat controller =
                     WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
@@ -193,15 +195,145 @@ public class MainActivity extends BridgeActivity {
         public void fetchAsync(final String requestJson, final String callbackName) {
             httpExecutor.execute(() -> {
                 final String result = doFetch(requestJson);
-                runOnUiThread(() -> getBridge().getWebView().evaluateJavascript(
-                    "window[" + JSONObject.quote(callbackName) + "] && window[" + JSONObject.quote(callbackName)
-                    + "](" + JSONObject.quote(result) + ")", null));
+                dispatchJs(callbackName, result);
             });
+        }
+
+        /** 分块流式通道：meta（状态/头）→ 多个 chunk（base64 字节）→ done，跨域回退时仍保持真流式 */
+        @JavascriptInterface
+        public void fetchStream(final String requestJson, final String callbackName) {
+            httpExecutor.execute(() -> {
+                String id = null;
+                HttpURLConnection conn = null;
+                try {
+                    JSONObject req = new JSONObject(requestJson);
+                    id = req.optString("id", null);
+                    conn = openConnection(req, id);
+                    int status = conn.getResponseCode();
+                    JSONObject meta = new JSONObject();
+                    meta.put("type", "meta");
+                    meta.put("status", status);
+                    JSONObject outHeaders = new JSONObject();
+                    for (Map.Entry<String, List<String>> entry : conn.getHeaderFields().entrySet()) {
+                        if (entry.getKey() != null && !entry.getValue().isEmpty()) {
+                            outHeaders.put(entry.getKey().toLowerCase(), entry.getValue().get(0));
+                        }
+                    }
+                    meta.put("headers", outHeaders);
+                    dispatchJs(callbackName, meta.toString());
+                    InputStream is = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
+                    if (is != null) {
+                        byte[] chunk = new byte[8192];
+                        int n;
+                        while ((n = is.read(chunk)) > 0) {
+                            JSONObject part = new JSONObject();
+                            part.put("type", "chunk");
+                            part.put("data", Base64.encodeToString(java.util.Arrays.copyOf(chunk, n), Base64.NO_WRAP));
+                            dispatchJs(callbackName, part.toString());
+                        }
+                        is.close();
+                    }
+                    dispatchJs(callbackName, "{\"type\":\"done\"}");
+                } catch (Exception e) {
+                    try {
+                        JSONObject err = new JSONObject();
+                        err.put("type", "error");
+                        err.put("message", String.valueOf(e.getMessage()));
+                        dispatchJs(callbackName, err.toString());
+                    } catch (Exception ignored) {
+                    }
+                } finally {
+                    if (id != null) {
+                        activeConns.remove(id);
+                    }
+                    if (conn != null) {
+                        conn.disconnect();
+                    }
+                }
+            });
+        }
+
+        private void dispatchJs(String callbackName, String payload) {
+            runOnUiThread(() -> getBridge().getWebView().evaluateJavascript(
+                "window[" + JSONObject.quote(callbackName) + "] && window[" + JSONObject.quote(callbackName)
+                + "](" + JSONObject.quote(payload) + ")", null));
         }
 
         @JavascriptInterface
         public String fetch(String requestJson) {
             return doFetch(requestJson);
+        }
+
+        /** 建立连接并处理手动重定向（跨主机剥离 Authorization），供缓冲与流式两条通道复用 */
+        private HttpURLConnection openConnection(JSONObject req, String id) throws Exception {
+            String url = req.getString("url");
+            String method = req.optString("method", "GET");
+            JSONObject headers = req.optJSONObject("headers");
+            String body = req.optString("body", null);
+            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+            if (id != null) {
+                activeConns.put(id, conn);
+            }
+            conn.setRequestMethod(method);
+            conn.setConnectTimeout(30000);
+            conn.setReadTimeout(300000);
+            conn.setInstanceFollowRedirects(false);
+            if (headers != null) {
+                Iterator<String> keys = headers.keys();
+                while (keys.hasNext()) {
+                    String key = keys.next();
+                    conn.setRequestProperty(key, headers.getString(key));
+                }
+            }
+            if (body != null && !body.isEmpty()) {
+                conn.setDoOutput(true);
+                OutputStream os = conn.getOutputStream();
+                os.write(body.getBytes(StandardCharsets.UTF_8));
+                os.close();
+            }
+            int status = conn.getResponseCode();
+            int redirects = 0;
+            while ((status == 301 || status == 302 || status == 303 || status == 307 || status == 308) && redirects < 5) {
+                String location = conn.getHeaderField("Location");
+                if (location == null) {
+                    break;
+                }
+                URL next = new URL(conn.getURL(), location);
+                boolean sameHost = next.getHost().equalsIgnoreCase(conn.getURL().getHost());
+                conn.disconnect();
+                activeConns.remove(id);
+                conn = (HttpURLConnection) next.openConnection();
+                if (id != null) {
+                    activeConns.put(id, conn);
+                }
+                conn.setConnectTimeout(30000);
+                conn.setReadTimeout(300000);
+                conn.setInstanceFollowRedirects(false);
+                if (headers != null) {
+                    Iterator<String> keys = headers.keys();
+                    while (keys.hasNext()) {
+                        String key = keys.next();
+                        if (!sameHost && key.equalsIgnoreCase("authorization")) {
+                            continue;
+                        }
+                        conn.setRequestProperty(key, headers.getString(key));
+                    }
+                }
+                if (status != 307 && status != 308) {
+                    conn.setRequestMethod("GET");
+                } else {
+                    conn.setRequestMethod(method);
+                    if (body != null && !body.isEmpty()) {
+                        conn.setDoOutput(true);
+                        OutputStream os = conn.getOutputStream();
+                        os.write(body.getBytes(StandardCharsets.UTF_8));
+                        os.close();
+                    }
+                }
+                status = conn.getResponseCode();
+                redirects++;
+            }
+            return conn;
         }
 
         private String doFetch(String requestJson) {
@@ -210,75 +342,9 @@ public class MainActivity extends BridgeActivity {
             try {
                 JSONObject req = new JSONObject(requestJson);
                 id = req.optString("id", null);
-                String url = req.getString("url");
-                String method = req.optString("method", "GET");
-                JSONObject headers = req.optJSONObject("headers");
-                String body = req.optString("body", null);
                 boolean binary = req.optBoolean("binary", false);
-                conn = (HttpURLConnection) new URL(url).openConnection();
-                if (id != null) {
-                    activeConns.put(id, conn);
-                }
-                conn.setRequestMethod(method);
-                conn.setConnectTimeout(30000);
-                conn.setReadTimeout(300000);
-                conn.setInstanceFollowRedirects(false);
-                if (headers != null) {
-                    Iterator<String> keys = headers.keys();
-                    while (keys.hasNext()) {
-                        String key = keys.next();
-                        conn.setRequestProperty(key, headers.getString(key));
-                    }
-                }
-                if (body != null && !body.isEmpty()) {
-                    conn.setDoOutput(true);
-                    OutputStream os = conn.getOutputStream();
-                    os.write(body.getBytes(StandardCharsets.UTF_8));
-                    os.close();
-                }
+                conn = openConnection(req, id);
                 int status = conn.getResponseCode();
-                // 手动重定向：跨主机不带 Authorization，防密钥经 302 泄往第三方
-                int redirects = 0;
-                while ((status == 301 || status == 302 || status == 303 || status == 307 || status == 308) && redirects < 5) {
-                    String location = conn.getHeaderField("Location");
-                    if (location == null) {
-                        break;
-                    }
-                    URL next = new URL(conn.getURL(), location);
-                    boolean sameHost = next.getHost().equalsIgnoreCase(conn.getURL().getHost());
-                    conn.disconnect();
-                    activeConns.remove(id);
-                    conn = (HttpURLConnection) next.openConnection();
-                    if (id != null) {
-                        activeConns.put(id, conn);
-                    }
-                    conn.setConnectTimeout(30000);
-                    conn.setReadTimeout(300000);
-                    conn.setInstanceFollowRedirects(false);
-                    if (headers != null) {
-                        Iterator<String> keys = headers.keys();
-                        while (keys.hasNext()) {
-                            String key = keys.next();
-                            if (!sameHost && key.equalsIgnoreCase("authorization")) {
-                                continue;
-                            }
-                            conn.setRequestProperty(key, headers.getString(key));
-                        }
-                    }
-                    if (status != 307 && status != 308) {
-                        conn.setRequestMethod("GET");
-                    } else {
-                        conn.setRequestMethod(method);
-                        if (body != null && !body.isEmpty()) {
-                            conn.setDoOutput(true);
-                            OutputStream os = conn.getOutputStream();
-                            os.write(body.getBytes(StandardCharsets.UTF_8));
-                            os.close();
-                        }
-                    }
-                    status = conn.getResponseCode();
-                    redirects++;
-                }
                 InputStream is = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
                 ByteArrayOutputStream buffer = new ByteArrayOutputStream();
                 if (is != null) {
@@ -352,39 +418,11 @@ public class MainActivity extends BridgeActivity {
         handleShareIntent(intent);
     }
 
-    /** 启动前读取 Web 侧主题偏好（Capacitor 的 localStorage 落在 WebView 数据目录），决定启动窗口配色 */
+    /** 启动前读取持久化主题（Web 侧 setNativeTheme 写入），决定启动窗口配色；无记录时跟随系统 */
     private boolean resolveDarkTheme() {
-        try {
-            java.io.File prefs = new java.io.File(getDataDir(), "app_webview/Default/Local Storage/leveldb");
-            java.io.File[] files = prefs.listFiles();
-            if (files != null) {
-                for (java.io.File f : files) {
-                    String name = f.getName();
-                    if (!name.endsWith(".log") && !name.endsWith(".ldb")) {
-                        continue;
-                    }
-                    byte[] bytes = new byte[(int) Math.min(f.length(), 2_000_000L)];
-                    java.io.FileInputStream in = new java.io.FileInputStream(f);
-                    int n = in.read(bytes);
-                    in.close();
-                    if (n <= 0) {
-                        continue;
-                    }
-                    String s = new String(bytes, 0, n, StandardCharsets.ISO_8859_1);
-                    int idx = s.lastIndexOf("kitechat:theme-preference");
-                    if (idx < 0) {
-                        continue;
-                    }
-                    String tail = s.substring(idx, Math.min(s.length(), idx + 160));
-                    if (tail.contains("dark")) {
-                        return true;
-                    }
-                    if (tail.contains("light")) {
-                        return false;
-                    }
-                }
-            }
-        } catch (Exception ignored) {
+        android.content.SharedPreferences prefs = getSharedPreferences("kitechat", MODE_PRIVATE);
+        if (prefs.contains("dark")) {
+            return prefs.getBoolean("dark", false);
         }
         int night = getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
         return night == android.content.res.Configuration.UI_MODE_NIGHT_YES;

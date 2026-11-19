@@ -80,6 +80,10 @@
   margin-right: 6px;
 }
 
+.newChatHidden {
+  display: none;
+}
+
 .listWrap {
   position: relative;
   flex: 1;
@@ -195,13 +199,12 @@
 
 .drawer {
   position: absolute;
-  top: 8px;
-  bottom: calc(8px + var(--kitechat-safe-bottom, 0px));
-  left: 8px;
+  top: 0;
+  bottom: 0;
+  left: 0;
   z-index: 800;
-  border-radius: 20px;
   overflow: hidden;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.18);
 }
 
 .drawerMask {
@@ -227,7 +230,8 @@
 
   .bottom {
     height: auto;
-    padding: 12px 0;
+    padding: 8px 0 calc(8px + var(--kitechat-safe-bottom, 0px));
+    border-top: 1px solid var(--dsw-alias-border-l1);
   }
 
   .settings {
