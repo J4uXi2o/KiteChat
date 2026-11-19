@@ -1,6 +1,6 @@
 {
   "name": "kitechat",
-  "version": "1.14.0",
+  "version": "1.15.0",
   "description": "KiteChat — 完全本地化的多提供商 AI 聊天盒子（基于 deepseek-ai/chat-demo，MIT）。",
   "license": "MIT",
   "private": true,

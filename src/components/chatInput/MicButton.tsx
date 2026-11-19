@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import clsx from 'clsx'
 import { useTranslate } from '../../i18n/index.js'
 import { createRecorder, transcribe } from '../../services/speech/engine.js'
@@ -160,7 +161,7 @@ export const VoiceBar = ({
 
   return (
     <div className={styles.voiceArea}>
-      {recording ? (
+      {recording ? createPortal(
         <div className={clsx(styles.voiceOverlay, willCancel && styles.voiceOverlayCancel)} aria-hidden>
           <div className={styles.voiceWaves}>
             {Array.from({ length: 24 }).map((_, i) => (
@@ -173,7 +174,8 @@ export const VoiceBar = ({
           <div className={styles.voiceOverlayHint}>
             {t(willCancel ? 'voiceReleaseCancel' : 'voiceSlideCancel')}
           </div>
-        </div>
+        </div>,
+        document.body
       ) : null}
       <button
         type="button"

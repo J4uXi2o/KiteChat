@@ -546,9 +546,9 @@
   color: #fff;
 }
 .voiceOverlay {
-  position: absolute;
+  position: fixed;
   left: 50%;
-  bottom: calc(100% + 12px);
+  bottom: calc(190px + var(--kitechat-safe-bottom, 0px) + var(--kitechat-keyboard, 0px));
   transform: translateX(-50%);
   z-index: 60;
   display: flex;

@@ -660,12 +660,3 @@ if any, to sign a "copyright disclaimer" for the program, if necessary.
 For more information on this, and how to apply and follow the GNU AGPL, see
 <https://www.gnu.org/licenses/>.
 
-
----
-
-Additional notice (upstream attribution):
-
-This project is refactored from deepseek-ai/chat-demo, which is licensed
-under the MIT License. The upstream copyright and permission notice is
-retained in the source file headers. The combined work as a whole is
-licensed under AGPL-3.0 as above.
