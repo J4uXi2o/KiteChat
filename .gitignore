@@ -25,3 +25,6 @@ android/app/src/main/assets/capacitor.plugins.json
 # misc
 valid_ref.png
 .DS_Store
+icon-res/
+pnpm-lock.yaml
+scripts/make_icons.py
