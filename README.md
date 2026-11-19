@@ -10,7 +10,7 @@
 [![Release](https://img.shields.io/github/v/release/J4uXi2o/KiteChat)](https://github.com/J4uXi2o/KiteChat/releases)
 [![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B-green.svg)](https://github.com/J4uXi2o/KiteChat/releases)
 
-[官网下载](https://j4uxi2o.github.io/KiteChat/) · [更新日志](https://github.com/J4uXi2o/KiteChat/releases) · [English](README.en.md)
+[官网下载](https://j4uxi2o.github.io/KiteChat/) · [网页版试用](https://j4uxi2o.github.io/KiteChat/app/) · [更新日志](https://github.com/J4uXi2o/KiteChat/releases) · [English](README.en.md)
 
 </div>
 

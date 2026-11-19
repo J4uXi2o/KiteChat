@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/J4uXi2o/KiteChat)](https://github.com/J4uXi2o/KiteChat/releases)
 
-[Download](https://j4uxi2o.github.io/KiteChat/) · [中文文档](README.md)
+[Download](https://j4uxi2o.github.io/KiteChat/) · [Try web app](https://j4uxi2o.github.io/KiteChat/app/) · [中文文档](README.md)
 
 </div>
 
